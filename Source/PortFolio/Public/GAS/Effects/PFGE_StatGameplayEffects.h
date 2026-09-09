@@ -148,7 +148,7 @@ struct PORTFOLIO_API FPFGE_StatGameplayEffects
 		const UObject* SourceObject = nullptr, const class UGameplayAbility* SourceAbility = nullptr,
 		const struct FHitResult* HitResult = nullptr);
 	static bool ApplyShield(class UAbilitySystemComponent* TargetASC);
-	static bool ApplyItemCooldown(class UAbilitySystemComponent* TargetASC, const FGameplayTag& CooldownTag, float Duration);
+	static FActiveGameplayEffectHandle ApplyItemCooldown(class UAbilitySystemComponent* TargetASC, const FGameplayTag& CooldownTag, float Duration);
 	static bool ApplyHeal(class UAbilitySystemComponent* TargetASC, float Amount);
 	static bool ApplyManaRestore(class UAbilitySystemComponent* TargetASC, float Amount);
 	static bool ApplyCoin(class UAbilitySystemComponent* TargetASC, float Amount);

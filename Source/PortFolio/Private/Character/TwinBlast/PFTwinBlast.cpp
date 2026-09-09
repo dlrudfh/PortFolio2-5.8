@@ -14,10 +14,9 @@
 #include "Particles/ParticleSystemComponent.h"
 #include "GameFramework/PlayerController.h"
 
-using enum UPFAnimInst_TwinBlast::MTGIDX_TB;
-
 APFTwinBlast::APFTwinBlast() : ShootLeft(true), UltGun(nullptr), UltShoulderEffect(nullptr)
 {
+	bUsesCrosshair = true;
 	AttackAbilityClass = UPFGA_Attack_TwinBlast::StaticClass();
 	UltimateAttackAbilityClass = UPFGA_Attack_TwinBlast_Ultimate::StaticClass();
 	UltimateAbilityClass = UPFGA_Ultimate_TwinBlast::StaticClass();
@@ -94,10 +93,19 @@ void APFTwinBlast::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 
-	// 공격 중 조준점 갱신
-	if (IsLocallyControlled() && IsAttackCommandActive())
+	// 조준 대상 표시, 공격 중 서버 조준점 갱신
+	if (IsLocallyControlled())
 	{
-		Server_UpdateAimPoint(CalculateAimPoint());
+		bool bCharacterTargeted = false;
+		const FVector CurrentAimPoint = CalculateAimPoint(&bCharacterTargeted);
+		if (CrosshairWidget)
+		{
+			CrosshairWidget->SetCharacterTargeted(bCharacterTargeted);
+		}
+		if (IsAttackCommandActive())
+		{
+			Server_UpdateAimPoint(CurrentAimPoint);
+		}
 	}
 
 	// 궁극기 이동 속도 적용
@@ -221,6 +229,12 @@ void APFTwinBlast::Jump()
 	Super::Jump();
 }
 
+// 궁극기 중 질주 차단
+bool APFTwinBlast::CanSprint() const
+{
+	return !IsUltimateActive();
+}
+
 void APFTwinBlast::Attack()
 {
 	if (IsDeadCharacter() || !IsLocallyControlled())
@@ -270,6 +284,10 @@ void APFTwinBlast::ApplyUltimateState()
 	}
 	// 전환 중 행동 차단, 이동 초기화
 	SetBlockTags(true);
+	if (HasAuthority() && IsUltimateActive() && IsSprinting())
+	{
+		SetReplicatedStateTag(PFGameplayTags::Character_State_Sprinting, false);
+	}
 
 	GetCharacterMovement()->StopMovementImmediately();
 	FinalDir = IDLE;
@@ -281,21 +299,16 @@ void APFTwinBlast::ApplyUltimateState()
 	// 캐릭터, 총 전환 연출
 	if(IsUltimateActive())
 	{
-		PFAnim->PlayMontage(etoi(ULTSTART));
-		if (UltGun) UltGun->PlayMontage(etoi(ULTSTART));
+		PFAnim->PlayMontage(etoi(UPFAnimInst_TwinBlast::MTGIDX_TB::ULTSTART));
+		if (UltGun) UltGun->PlayMontage(etoi(UPFAnimInst_TwinBlast::MTGIDX_TB::ULTSTART));
 	}
 	else
 	{
 		StopUltShoulderEffect();
-		PFAnim->PlayMontage(etoi(ULTEND));
-		if (UltGun) UltGun->PlayMontage(etoi(ULTEND));
+		PFAnim->PlayMontage(etoi(UPFAnimInst_TwinBlast::MTGIDX_TB::ULTEND));
+		if (UltGun) UltGun->PlayMontage(etoi(UPFAnimInst_TwinBlast::MTGIDX_TB::ULTEND));
 	}
 
-	// 궁극기 조준점 반영
-	if (IsLocallyControlled() && CrosshairWidget)
-	{
-		CrosshairWidget->SetUltimateCrosshair(IsUltimateActive());
-	}
 }
 
 // 일반 공격 몽타주 재생
@@ -309,7 +322,7 @@ void APFTwinBlast::GameplayCue_Character_Attack_Twinblast_Normal_Montage(
 	}
 
 	const bool bGCShootLeft = Parameters.RawMagnitude > 0.5f;
-	PFAnim->PlayMontage(bGCShootLeft ? etoi(LEFTATTACK) : etoi(RIGHTATTACK));
+	PFAnim->PlayMontage(bGCShootLeft ? etoi(UPFAnimInst_TwinBlast::MTGIDX_TB::LEFTATTACK) : etoi(UPFAnimInst_TwinBlast::MTGIDX_TB::RIGHTATTACK));
 }
 
 // 궁극기 공격 몽타주 재생
@@ -321,7 +334,7 @@ void APFTwinBlast::GameplayCue_Character_Attack_Twinblast_Ultimate_Montage(
 	UPFAnimInst_TwinBlast* TwinBlastAnim = Cast<UPFAnimInst_TwinBlast>(PFAnim);
 	if (EventType == EGameplayCueEvent::Executed && TwinBlastAnim && !TwinBlastAnim->IsUltimateAttackMontagePlaying())
 	{
-		TwinBlastAnim->PlayMontage(etoi(ULTATTACK));
+		TwinBlastAnim->PlayMontage(etoi(UPFAnimInst_TwinBlast::MTGIDX_TB::ULTATTACK));
 	}
 }
 
@@ -405,11 +418,15 @@ void APFTwinBlast::OnMontageEnd(UAnimMontage* Montage, bool bInterrupted)
 	Super::OnMontageEnd(Montage, bInterrupted);
 
 	int MontageIdx = PFAnim->MontageEndTask(Montage);
+	if (MontageIdx == etoi(UPFAnimInst_TwinBlast::MTGIDX_TB::MONTAGE_END))
+	{
+		return;
+	}
 
 	// 궁극기 전환 종료 후 행동, 이펙트 반영
 	switch (MontageIdx)
 	{
-	case etoi(ULTSTART):
+	case etoi(UPFAnimInst_TwinBlast::MTGIDX_TB::ULTSTART):
 	{
 		SetBlockTags(false);
 
@@ -419,7 +436,7 @@ void APFTwinBlast::OnMontageEnd(UAnimMontage* Montage, bool bInterrupted)
 		}
 	}
 		break;
-	case etoi(ULTEND):
+	case etoi(UPFAnimInst_TwinBlast::MTGIDX_TB::ULTEND):
 		StopUltShoulderEffect();
 		SetBlockTags(false);
 		break;
@@ -427,7 +444,7 @@ void APFTwinBlast::OnMontageEnd(UAnimMontage* Montage, bool bInterrupted)
 		break;
 	}
 
-	if (!IsAttackCommandActive() && (MontageIdx == etoi(LEFTATTACK) || MontageIdx == etoi(RIGHTATTACK)))
+	if (!IsAttackCommandActive() && (MontageIdx == etoi(UPFAnimInst_TwinBlast::MTGIDX_TB::LEFTATTACK) || MontageIdx == etoi(UPFAnimInst_TwinBlast::MTGIDX_TB::RIGHTATTACK)))
 	{
 		PFAnim->ResetAttackCombo();
 	}

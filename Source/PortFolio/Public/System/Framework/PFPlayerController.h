@@ -23,7 +23,11 @@ public:
 	UFUNCTION(Server, Reliable)
 	void Server_SetCharacter(ECHARACTER SelectedCharacter);
 	UFUNCTION(Server, Reliable)
-	void Server_ReloadCharacter();
+	void Server_RequestInitialSpawn(ECHARACTER SelectedCharacter);
+	UFUNCTION(Client, Reliable)
+	void Client_StartRespawnCountdown(double RespawnEndServerTime, float RespawnDuration);
+	UFUNCTION(Client, Reliable)
+	void Client_StopRespawnCountdown();
 	void ToggleInventory();
 	void ToggleStats();
 
@@ -51,6 +55,13 @@ private:
 	void UseQuickSlotByIndex(int32 QuickSlotIndex);
 
 private:
+	friend class APFGameMode;
+
+	ECHARACTER InitialSpawnCharacter = CHARACTER_TWINBLAST;
+	bool bInitialSpawnReady = false;
+	bool bInitialSpawnRequested = false;
+	bool bInitialSpawnInProgress = false;
+	bool bInitialSpawnComplete = false;
 
 	// 인벤토리 창
 	UPROPERTY()
@@ -59,4 +70,8 @@ private:
 	// 스탯 창
 	UPROPERTY()
 	class UPFStatWidget* StatWidget = nullptr;
+
+	// 부활 대기 UI
+	UPROPERTY(Transient)
+	class UPFRespawnWidget* RespawnWidget = nullptr;
 };

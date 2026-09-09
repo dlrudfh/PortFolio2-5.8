@@ -4,6 +4,7 @@
 #include "System/Framework/PFGameInstance.h"
 #include "System/Framework/PFPlayerState.h"
 #include "System/Framework/PFGameMode.h"
+#include "System/Framework/PFPlayerController.h"
 #include "Engine/World.h"
 #include "GAS/Effects/PFGE_StatGameplayEffects.h"
 #include "GAS/PFGameplayTags.h"
@@ -580,9 +581,17 @@ void APFCharacter::Dead()
 	{
 		if (APFGameMode* PFGameMode = GetWorld()->GetAuthGameMode<APFGameMode>())
 		{
+			constexpr float RespawnDelay = 5.f;
 			GetWorldTimerManager().SetTimer(PlayerRespawnTimerHandle,
 				FTimerDelegate::CreateUObject(PFGameMode, &APFGameMode::RespawnPlayer,
-					TWeakObjectPtr<APlayerController>(PlayerController)), 10.f, false);
+					TWeakObjectPtr<APlayerController>(PlayerController)), RespawnDelay, false);
+
+			// 소유 클라이언트에 서버 기준 부활 시각 전달
+			if (APFPlayerController* PFPlayerController = Cast<APFPlayerController>(PlayerController))
+			{
+				const double RespawnEndServerTime = GetWorld()->GetTimeSeconds() + static_cast<double>(RespawnDelay);
+				PFPlayerController->Client_StartRespawnCountdown(RespawnEndServerTime, RespawnDelay);
+			}
 		}
 	}
 }

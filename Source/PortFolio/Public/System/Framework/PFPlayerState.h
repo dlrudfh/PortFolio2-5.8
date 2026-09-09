@@ -114,9 +114,11 @@ private:
 
 	int32 FindInventorySlotIndexByItemID(int32 ItemID) const;
 
+	bool CanUseInventoryItem(int32 ItemID) const;
+
 	void SanitizeQuickSlots();
 
-	bool StartItemCooldown(int32 ItemID);
+	FActiveGameplayEffectHandle StartItemCooldown(int32 ItemID);
 
 private:
 	UPROPERTY(Replicated)

@@ -15,6 +15,7 @@
 #include "Engine/StaticMeshActor.h"
 #include "Engine/World.h"
 #include "Kismet/GameplayStatics.h"
+#include "Misc/PackageName.h"
 #include "AbilitySystemComponent.h"
 #include "GAS/Attributes/PFAttributeSet.h"
 #include "GAS/Effects/PFGE_StatGameplayEffects.h"
@@ -35,24 +36,108 @@ void APFGameMode::BeginPlay()
 	Pool->PreparePool(ABullet::StaticClass(), 10);
 }
 
-void APFGameMode::PostLogin(APlayerController* NewPlayer)
+void APFGameMode::HandleStartingNewPlayer_Implementation(APlayerController* NewPlayer)
 {
-	Super::PostLogin(NewPlayer);
-
-	// 초기 생성 위치 적용, 실패 시 기본 위치 사용
-	if (NewPlayer && NewPlayer->HasAuthority())
+	if (!UsesInitialSpawnFlow(NewPlayer))
 	{
-		FTransform SpawnTransform;
-		if (TryFindInitialPlayerSpawnTransform(NewPlayer, SpawnTransform))
-		{
-			RestartPlayerAtTransform(NewPlayer, SpawnTransform);
-			if (NewPlayer->GetPawn())
-			{
-				return;
-			}
-		}
+		Super::HandleStartingNewPlayer_Implementation(NewPlayer);
+		return;
+	}
 
-		RestartPlayer(NewPlayer);
+	// 로그인 준비와 캐릭터 선택이 모두 끝난 뒤 최초 생성
+	APFPlayerController* PlayerController = Cast<APFPlayerController>(NewPlayer);
+	PlayerController->bInitialSpawnReady = true;
+	TryStartInitialPlayer(PlayerController);
+}
+
+void APFGameMode::RestartPlayer(AController* NewPlayer)
+{
+	if (UsesInitialSpawnFlow(NewPlayer))
+	{
+		APFPlayerController* PlayerController = Cast<APFPlayerController>(NewPlayer);
+		if (!PlayerController->bInitialSpawnComplete)
+		{
+			TryStartInitialPlayer(PlayerController);
+			return;
+		}
+	}
+
+	Super::RestartPlayer(NewPlayer);
+}
+
+// 최초 생성 대상 확인
+bool APFGameMode::UsesInitialSpawnFlow(AController* Controller) const
+{
+	const UWorld* World = GetWorld();
+	return IsValid(Cast<APFPlayerController>(Controller)) && World
+		&& !FPackageName::GetShortName(World->GetMapName()).Contains(TEXT("Title"));
+}
+
+// 최초 선택 캐릭터 접수
+void APFGameMode::RequestInitialSpawn(APFPlayerController* NewPlayer, ECHARACTER SelectedCharacter)
+{
+	if (!HasAuthority() || !UsesInitialSpawnFlow(NewPlayer)
+		|| NewPlayer->bInitialSpawnComplete || NewPlayer->bInitialSpawnInProgress)
+	{
+		return;
+	}
+	if (SelectedCharacter != CHARACTER_TWINBLAST && SelectedCharacter != CHARACTER_KWANG)
+	{
+		return;
+	}
+
+	if (!NewPlayer->bInitialSpawnRequested)
+	{
+		NewPlayer->InitialSpawnCharacter = SelectedCharacter;
+		NewPlayer->bInitialSpawnRequested = true;
+	}
+	TryStartInitialPlayer(NewPlayer);
+}
+
+// 선택 캐릭터 최초 생성
+void APFGameMode::TryStartInitialPlayer(APFPlayerController* NewPlayer)
+{
+	if (!HasAuthority() || !IsValid(NewPlayer)
+		|| NewPlayer->bInitialSpawnComplete || NewPlayer->bInitialSpawnInProgress)
+	{
+		return;
+	}
+	if (IsValid(NewPlayer->GetPawn()))
+	{
+		NewPlayer->bInitialSpawnComplete = true;
+		return;
+	}
+	if (!NewPlayer->bInitialSpawnReady || !NewPlayer->bInitialSpawnRequested)
+	{
+		return;
+	}
+
+	APFPlayerState* PlayerState = NewPlayer->GetPlayerState<APFPlayerState>();
+	if (!IsValid(PlayerState) || bStartPlayersAsSpectators
+		|| MustSpectate(NewPlayer) || !PlayerCanRestart(NewPlayer))
+	{
+		return;
+	}
+
+	NewPlayer->bInitialSpawnInProgress = true;
+	PlayerState->SetCharacter(NewPlayer->InitialSpawnCharacter);
+
+	// 무작위 위치에 생성하고 실패하면 기본 시작 위치 사용
+	FTransform SpawnTransform;
+	if (TryFindInitialPlayerSpawnTransform(NewPlayer, SpawnTransform))
+	{
+		RestartPlayerAtTransform(NewPlayer, SpawnTransform);
+	}
+	if (!IsValid(NewPlayer->GetPawn()))
+	{
+		Super::RestartPlayer(NewPlayer);
+	}
+
+	NewPlayer->bInitialSpawnComplete = IsValid(NewPlayer->GetPawn());
+	NewPlayer->bInitialSpawnInProgress = false;
+	if (!NewPlayer->bInitialSpawnComplete)
+	{
+		PFLOG(Warning, TEXT("Initial player spawn failed: %s"), *GetNameSafe(NewPlayer));
 	}
 }
 

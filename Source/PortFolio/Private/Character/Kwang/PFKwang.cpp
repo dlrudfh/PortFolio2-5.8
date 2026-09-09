@@ -6,8 +6,6 @@
 #include "Particles/ParticleSystemComponent.h"
 #include "Engine/World.h"
 
-using enum UPFAnimInst_Kwang::MTGIDX_K;
-
 APFKwang::APFKwang() : SwordTrail(nullptr), bSwordHitDetectionActive(false)
 {
 	AttackAbilityClass = UPFGA_Attack_Kwang::StaticClass();
@@ -105,7 +103,7 @@ void APFKwang::GameplayCue_Character_Attack_Kwang_Normal_Montage(
 	}
 
 	const int32 MontageIndex = FMath::RoundToInt(Parameters.RawMagnitude);
-	if (MontageIndex < etoi(ATTACKA) || MontageIndex > etoi(ATTACKD))
+	if (MontageIndex < etoi(UPFAnimInst_Kwang::MTGIDX_K::ATTACKA) || MontageIndex > etoi(UPFAnimInst_Kwang::MTGIDX_K::ATTACKD))
 	{
 		return;
 	}
@@ -236,10 +234,10 @@ void APFKwang::OnMontageEnd(UAnimMontage* Montage, bool bInterrupted)
 	// 공격 몽타주 종료 시 검 판정 해제
 	switch (MontageIdx)
 	{
-	case etoi(ATTACKA):
-	case etoi(ATTACKB):
-	case etoi(ATTACKC):
-	case etoi(ATTACKD):
+	case etoi(UPFAnimInst_Kwang::MTGIDX_K::ATTACKA):
+	case etoi(UPFAnimInst_Kwang::MTGIDX_K::ATTACKB):
+	case etoi(UPFAnimInst_Kwang::MTGIDX_K::ATTACKC):
+	case etoi(UPFAnimInst_Kwang::MTGIDX_K::ATTACKD):
 		AttackEnd();
 		break;
 	default:

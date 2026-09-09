@@ -290,13 +290,13 @@ void APFPlayer::SetHPBar()
 		SelfHPBar = CreateWidget<UPFCharacterWidget>(GetWorld(), SelfWidgetClass);
 		bSelfHPBarBound = false;
 	}
-	if (IsLocallyControlled() && !CrosshairWidget)
+	if (IsLocallyControlled() && bUsesCrosshair && !CrosshairWidget)
 	{
 		CrosshairWidget = CreateWidget<UPFCrosshairWidget>(GetWorld(), UPFCrosshairWidget::StaticClass());
 		if (CrosshairWidget)
 		{
 			CrosshairWidget->SetVisibility(ESlateVisibility::HitTestInvisible);
-			CrosshairWidget->AddToViewport(etoi(PLAYERSTAT) + 3);
+			CrosshairWidget->AddToViewport(etoi(PLAYERSTAT) - 1);
 		}
 	}
 
@@ -374,7 +374,7 @@ void APFPlayer::Tick(float DeltaTime)
 	// 질주 중 회전 방식 조정
 	if (ViewpointFixed)
 	{
-		if (IsSprinting() && !IsAttackCommandActive() && (FinalDir == LEFT || FinalDir == RIGHT))
+		if (IsSprinting() && CanSprint() && !IsAttackCommandActive() && (FinalDir == LEFT || FinalDir == RIGHT))
 		{
 			GetCharacterMovement()->bOrientRotationToMovement = true;
 		}
@@ -421,39 +421,27 @@ void APFPlayer::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 }
 
 // 체력 회복
-void APFPlayer::GetHP(float Value)
+bool APFPlayer::GetHP(float Value)
 {
-	if (HasAuthority())
-	{
-		FPFGE_StatGameplayEffects::ApplyHeal(ASC, Value);
-	}
+	return HasAuthority() && FPFGE_StatGameplayEffects::ApplyHeal(ASC, Value);
 }
 
 // 마나 회복
-void APFPlayer::GetMP(float Value)
+bool APFPlayer::GetMP(float Value)
 {
-	if (HasAuthority())
-	{
-		FPFGE_StatGameplayEffects::ApplyManaRestore(ASC, Value);
-	}
+	return HasAuthority() && FPFGE_StatGameplayEffects::ApplyManaRestore(ASC, Value);
 }
 
 // 실드 적용
-void APFPlayer::GetShield()
+bool APFPlayer::GetShield()
 {
-	if (HasAuthority())
-	{
-		FPFGE_StatGameplayEffects::ApplyShield(ASC);
-	}
+	return HasAuthority() && FPFGE_StatGameplayEffects::ApplyShield(ASC);
 }
 
 // 코인 획득
-void APFPlayer::GetCoin(float Value)
+bool APFPlayer::GetCoin(float Value)
 {
-	if (HasAuthority())
-	{
-		FPFGE_StatGameplayEffects::ApplyCoin(ASC, Value);
-	}
+	return HasAuthority() && FPFGE_StatGameplayEffects::ApplyCoin(ASC, Value);
 }
 
 // 아이템 획득 이펙트 전파
@@ -958,8 +946,13 @@ void APFPlayer::Server_UpdateAimPoint_Implementation(FVector AimPoint_Client)
 }
 
 // 화면 중앙의 조준 위치 계산
-FVector APFPlayer::CalculateAimPoint() const
+FVector APFPlayer::CalculateAimPoint(bool* bOutCharacterTargeted) const
 {
+	if (bOutCharacterTargeted)
+	{
+		*bOutCharacterTargeted = false;
+	}
+
 	constexpr float MaxAimTraceDistance = 4000.f;
 	FVector TraceStart = GetPawnViewLocation();
 	FVector TraceDirection = GetBaseAimRotation().Vector();
@@ -1001,6 +994,10 @@ FVector APFPlayer::CalculateAimPoint() const
 	if (UWorld* World = GetWorld();
 		World && World->LineTraceSingleByChannel(AimHit, TraceStart, TraceEnd, AimTraceChannel, AimTraceParams))
 	{
+		if (bOutCharacterTargeted)
+		{
+			*bOutCharacterTargeted = IsValid(Cast<APFCharacter>(AimHit.GetActor()));
+		}
 		return AimHit.ImpactPoint;
 	}
 
@@ -1030,7 +1027,7 @@ void APFPlayer::Server_Ultimate_Implementation()
 // 질주 전환 요청
 void APFPlayer::Sprint()
 {
-	if (IsDeadCharacter() || IsMovementBlocked())
+	if (IsDeadCharacter() || IsMovementBlocked() || !CanSprint())
 	{
 		return;
 	}
@@ -1046,7 +1043,7 @@ void APFPlayer::Sprint()
 // 서버 질주 상태 전환
 void APFPlayer::Server_Sprint_Implementation()
 {
-	if (IsMovementBlocked())
+	if (IsMovementBlocked() || !CanSprint())
 	{
 		return;
 	}
@@ -1058,6 +1055,12 @@ void APFPlayer::Server_Sprint_Implementation()
 bool APFPlayer::IsSprinting() const
 {
 	return HasStateTag(PFGameplayTags::Character_State_Sprinting);
+}
+
+// 질주 허용 여부 조회
+bool APFPlayer::CanSprint() const
+{
+	return true;
 }
 
 // 시점 고정 전환 요청

@@ -2,10 +2,12 @@
 
 #include "Character/PFPlayer.h"
 #include "System/Framework/PFGameInstance.h"
+#include "System/Framework/PFGameMode.h"
 #include "UI/Inventory/PFInventoryWidget.h"
 #include "UI/HUD/PFStatWidget.h"
-#include "GameFramework/GameModeBase.h"
+#include "UI/HUD/PFRespawnWidget.h"
 #include "InputCoreTypes.h"
+#include "Misc/PackageName.h"
 
 void APFPlayerController::PostInitializeComponents()
 {
@@ -20,6 +22,10 @@ void APFPlayerController::OnPossess(APawn* aPawn)
 	PFLOG_W;
 	Super::OnPossess(aPawn);
 	BindInventoryWidget();
+	if (aPawn && GetPawn() == aPawn)
+	{
+		Client_StopRespawnCountdown();
+	}
 }
 
 void APFPlayerController::OnRep_PlayerState()
@@ -36,6 +42,14 @@ void APFPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		InventoryWidget->BindPlayerState(nullptr);
 		InventoryWidget->RemoveFromParent();
 		InventoryWidget = nullptr;
+	}
+
+	// 부활 대기 UI 정리
+	if (RespawnWidget)
+	{
+		RespawnWidget->StopCountdown();
+		RespawnWidget->RemoveFromParent();
+		RespawnWidget = nullptr;
 	}
 	Super::EndPlay(EndPlayReason);
 }
@@ -56,17 +70,14 @@ void APFPlayerController::SetCharacter(ECHARACTER SelectedCharacter)
 	}
 }
 
-// 서버에서 선택 캐릭터 재생성
-void APFPlayerController::Server_ReloadCharacter_Implementation()
+// 서버에 최초 생성 요청 전달
+void APFPlayerController::Server_RequestInitialSpawn_Implementation(ECHARACTER SelectedCharacter)
 {
-	if (APawn* ControlledPawn = GetPawn())
+	UWorld* World = GetWorld();
+	APFGameMode* GameMode = World ? World->GetAuthGameMode<APFGameMode>() : nullptr;
+	if (GameMode)
 	{
-		ControlledPawn->Destroy();
-	}
-
-	if (AGameModeBase* GameMode = GetWorld()->GetAuthGameMode())
-	{
-		GameMode->RestartPlayer(this);
+		GameMode->RequestInitialSpawn(this, SelectedCharacter);
 	}
 }
 
@@ -74,6 +85,41 @@ void APFPlayerController::Server_ReloadCharacter_Implementation()
 void APFPlayerController::Server_SetCharacter_Implementation(ECHARACTER SelectedCharacter)
 {
 	SetCharacter(SelectedCharacter);
+}
+
+// 소유 플레이어의 부활 대기 표시
+void APFPlayerController::Client_StartRespawnCountdown_Implementation(double RespawnEndServerTime, float RespawnDuration)
+{
+	if (!IsLocalController() || RespawnDuration <= 0.f)
+	{
+		return;
+	}
+
+	if (!RespawnWidget)
+	{
+		RespawnWidget = CreateWidget<UPFRespawnWidget>(this, UPFRespawnWidget::StaticClass());
+		if (!RespawnWidget)
+		{
+			PFLOG(Warning, TEXT("Respawn widget creation failed"));
+			return;
+		}
+		RespawnWidget->SetVisibility(ESlateVisibility::Collapsed);
+	}
+
+	if (!RespawnWidget->IsInViewport())
+	{
+		RespawnWidget->AddToPlayerScreen(etoi(PLAYERSTAT) + 4);
+	}
+	RespawnWidget->StartCountdown(RespawnEndServerTime, RespawnDuration);
+}
+
+// 소유 플레이어의 부활 대기 종료
+void APFPlayerController::Client_StopRespawnCountdown_Implementation()
+{
+	if (IsLocalController() && RespawnWidget)
+	{
+		RespawnWidget->StopCountdown();
+	}
 }
 
 void APFPlayerController::SetupInputComponent()
@@ -108,10 +154,12 @@ void APFPlayerController::BeginPlay()
 		return;
 	}
 
-	// 타이틀, 선택 캐릭터 반영
 	UPFGameInstance* GI = GetGameInstance<UPFGameInstance>();
+	if (!GI)
+	{
+		return;
+	}
 	GI->CreateTitle();
-	SetCharacter(GI->GetCharacterType());
 
 	UWorld* World = GetWorld();
 	if (!World)
@@ -120,10 +168,14 @@ void APFPlayerController::BeginPlay()
 	}
 
 	FString LevelName = FPackageName::GetShortName(World->GetMapName());
-	if (!LevelName.Contains(TEXT("Title")))
+	if (LevelName.Contains(TEXT("Title")))
+	{
+		SetCharacter(GI->GetCharacterType());
+	}
+	else
 	{
 		CreateUI();
-		Server_ReloadCharacter();
+		Server_RequestInitialSpawn(GI->GetCharacterType());
 	}
 }
 

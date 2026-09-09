@@ -1,5 +1,7 @@
 #include "Animation/PFAnimInst_TwinBlast.h"
 
+#include "Animation/AnimMontage.h"
+#include "Animation/ActiveMontageInstanceScope.h"
 #include "GAS/PFGameplayTags.h"
 
 UPFAnimInst_TwinBlast::UPFAnimInst_TwinBlast() : UPFAnimInstance()
@@ -9,20 +11,49 @@ UPFAnimInst_TwinBlast::UPFAnimInst_TwinBlast() : UPFAnimInstance()
 
 void UPFAnimInst_TwinBlast::PlayMontage(int NextIdx)
 {
+	if (!Montages.IsValidIndex(NextIdx) || !Montages[NextIdx])
+	{
+		return;
+	}
+
 	if (CurMtg == Montages[etoi(ULTSTART)] || CurMtg == Montages[etoi(ULTEND)] || CurMtg == Montages[etoi(LEVELSTART)])
 	{
 		return;
 	}
-	// 일반 공격의 혼합, 자세 유지 시간 설정
-	else if (NextIdx == etoi(LEFTATTACK) || NextIdx == etoi(RIGHTATTACK))
+
+	if (NextIdx == etoi(LEFTATTACK) || NextIdx == etoi(RIGHTATTACK))
 	{
-		if (!IsSaveAttack())
+		// 기존 몽타주와 혼합하며 다음 일반 공격 재생
+		AttackMontageInstanceID = INDEX_NONE;
+		if (Montage_Play(Montages[NextIdx]) <= 0.f)
 		{
-			Set_Lerp(0.f, true, 10.f);
+			return;
 		}
+		CurMtg = Montages[NextIdx];
+		FAnimMontageInstance* AttackInstance = GetActiveInstanceForMontage(CurMtg);
+		AttackMontageInstanceID = AttackInstance ? AttackInstance->GetInstanceID() : INDEX_NONE;
+
+		// 이전 공격 몽타주의 남은 발사, 콤보 노티파이 제외
+		for (FAnimNotifyEventReference& EventReference : NotifyQueue.AnimNotifies)
+		{
+			const FAnimNotifyEvent* Notify = EventReference.GetNotify();
+			const UE::Anim::FAnimNotifyMontageInstanceContext* MontageContext =
+				EventReference.GetContextData<UE::Anim::FAnimNotifyMontageInstanceContext>();
+			if (Notify && !Notify->Notify && !Notify->NotifyStateClass && MontageContext
+				&& MontageContext->MontageInstanceID != AttackMontageInstanceID
+				&& (Notify->NotifyName == TEXT("SaveAttack") || Notify->NotifyName == TEXT("ResetCombo")
+					|| Notify->NotifyName == TEXT("Shoot") || Notify->NotifyName == TEXT("RelaxShoot")))
+			{
+				EventReference.SetNotify(nullptr);
+			}
+		}
+
+		Set_Lerp(LerpVal, true, 10.f);
 		RelaxTime = 3.f;
+		return;
 	}
 
+	AttackMontageInstanceID = INDEX_NONE;
 	Montage_Stop(0.f);
 	CurMtg = Montages[NextIdx];
 	Montage_Play(CurMtg);
@@ -41,12 +72,24 @@ int UPFAnimInst_TwinBlast::MontageEndTask(UAnimMontage* Montage)
 		}
 	}
 
+	// 새 일반 공격이 이어지는 동안 이전 공격의 종료 처리 보류
+	if (MtgIdx == etoi(LEFTATTACK) || MtgIdx == etoi(RIGHTATTACK))
+	{
+		const FAnimMontageInstance* AttackInstance = GetMontageInstanceForID(AttackMontageInstanceID);
+		if (AttackInstance && AttackInstance->IsValid()
+			&& (AttackInstance->IsActive() || AttackInstance->GetWeight() > 0.f))
+		{
+			return etoi(MONTAGE_END);
+		}
+		AttackMontageInstanceID = INDEX_NONE;
+	}
+
 	if (MtgIdx == etoi(ULTSTART))
 	{
 		AnimNotify_ResetCombo();
 	}
 
-	CurMtg = nullptr;
+	CurMtg = GetCurrentActiveMontage();
 
 	return MtgIdx;
 }

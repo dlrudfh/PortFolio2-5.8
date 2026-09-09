@@ -33,6 +33,9 @@ public:
 	void AnimNotify_RelaxShoot();
 
 private:
+	// 현재 일반 공격 몽타주 식별자
+	int32 AttackMontageInstanceID = INDEX_NONE;
+
 	virtual void LoadMontages() override;
 	virtual void AnimNotify_ResetCombo() override;
 };

@@ -7,8 +7,6 @@
 #include "Kismet/GameplayStatics.h"
 #include "Particles/ParticleSystem.h"
 
-using enum UPFAnimInst_TwinBlast::MTGIDX_TB;
-
 APFEnemyTwinblast::APFEnemyTwinblast()
 {
 	AttackAbilityClass = UPFGA_Attack_TwinBlast::StaticClass();
@@ -104,7 +102,23 @@ bool APFEnemyTwinblast::ShouldAttackTarget(const APFCharacter* Target, float Sur
 		return false;
 	}
 
-	// 대상까지 시야 검사
+	return HasClearSightToTarget(Target);
+}
+
+bool APFEnemyTwinblast::ShouldApproachTarget(const APFCharacter* Target, float SurfaceDistance) const
+{
+	return IsPlayerTargetValid(Target)
+		&& (Super::ShouldApproachTarget(Target, SurfaceDistance) || !HasClearSightToTarget(Target));
+}
+
+// 대상까지 시야 확인
+bool APFEnemyTwinblast::HasClearSightToTarget(const APFCharacter* Target) const
+{
+	if (!IsPlayerTargetValid(Target))
+	{
+		return false;
+	}
+
 	const FVector SightStart = GetPawnViewLocation();
 	const FVector SightEnd = Target->GetPawnViewLocation();
 
@@ -138,7 +152,7 @@ void APFEnemyTwinblast::GameplayCue_Character_Attack_Twinblast_Normal_Montage(
 	}
 
 	const bool bGCShootLeft = Parameters.RawMagnitude > 0.5f;
-	PFAnim->PlayMontage(bGCShootLeft ? etoi(LEFTATTACK) : etoi(RIGHTATTACK));
+	PFAnim->PlayMontage(bGCShootLeft ? etoi(UPFAnimInst_TwinBlast::MTGIDX_TB::LEFTATTACK) : etoi(UPFAnimInst_TwinBlast::MTGIDX_TB::RIGHTATTACK));
 }
 
 // 일반 공격 발사 연출
@@ -163,11 +177,15 @@ void APFEnemyTwinblast::OnMontageEnd(UAnimMontage* Montage, bool bInterrupted)
 	Super::OnMontageEnd(Montage, bInterrupted);
 
 	const int MontageIndex = PFAnim->MontageEndTask(Montage);
+	if (MontageIndex == etoi(UPFAnimInst_TwinBlast::MTGIDX_TB::MONTAGE_END))
+	{
+		return;
+	}
 
 	// 공격 종료 후 콤보, 발사 방향 초기화
 	if (!IsAttackCommandActive())
 	{
-		if (MontageIndex == etoi(LEFTATTACK) || MontageIndex == etoi(RIGHTATTACK))
+		if (MontageIndex == etoi(UPFAnimInst_TwinBlast::MTGIDX_TB::LEFTATTACK) || MontageIndex == etoi(UPFAnimInst_TwinBlast::MTGIDX_TB::RIGHTATTACK))
 		{
 			PFAnim->ResetAttackCombo();
 		}

@@ -5,6 +5,7 @@
 #include "GameFramework/GameModeBase.h"
 #include "PFGameMode.generated.h"
 
+class APFPlayerController;
 class UCapsuleComponent;
 struct FCollisionQueryParams;
 
@@ -22,7 +23,10 @@ public:
 
 	virtual void BeginPlay() override;
 
-	virtual void PostLogin(APlayerController* NewPlayer) override;
+	virtual void HandleStartingNewPlayer_Implementation(APlayerController* NewPlayer) override;
+	virtual void RestartPlayer(AController* NewPlayer) override;
+
+	void RequestInitialSpawn(APFPlayerController* NewPlayer, ECHARACTER SelectedCharacter);
 
 	void RespawnPlayer(TWeakObjectPtr<APlayerController> PlayerController);
 
@@ -31,5 +35,7 @@ public:
 	virtual UClass* GetDefaultPawnClassForController_Implementation(AController* Controller) override;
 
 private:
+	bool UsesInitialSpawnFlow(AController* Controller) const;
+	void TryStartInitialPlayer(APFPlayerController* NewPlayer);
 	bool TryFindInitialPlayerSpawnTransform(APlayerController* NewPlayer, FTransform& OutSpawnTransform);
 };

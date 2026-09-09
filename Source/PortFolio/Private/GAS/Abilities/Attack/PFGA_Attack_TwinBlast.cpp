@@ -86,7 +86,7 @@ bool UPFGA_Attack_TwinBlast::TryShoot(APFTwinBlast*)
 void UPFGA_Attack_TwinBlast::OnShoot(FGameplayEventData Payload)
 {
 	(void)Payload;
-	if (bShotFired)
+	if (!IsActive() || bShotFired)
 	{
 		return;
 	}
@@ -108,9 +108,13 @@ void UPFGA_Attack_TwinBlast::OnShoot(FGameplayEventData Payload)
 	if (APFEnemyTwinblast* EnemyTwinBlast = Cast<APFEnemyTwinblast>(AvatarActor))
 	{
 		const APFCharacter* Target = EnemyTwinBlast->TargetCharacter.Get();
-		const FVector AimPoint = IsValid(Target) ? Target->GetActorLocation()
-			: EnemyTwinBlast->GetActorLocation() + EnemyTwinBlast->GetActorForwardVector() * 4000.f;
-		StartShoot(nullptr, EnemyTwinBlast, AimPoint);
+		if (!EnemyTwinBlast->IsPlayerTargetValid(Target))
+		{
+			EnemyTwinBlast->ClearEnemyIntent();
+			return;
+		}
+
+		StartShoot(nullptr, EnemyTwinBlast, Target->GetActorLocation());
 		return;
 	}
 

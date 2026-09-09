@@ -54,6 +54,7 @@ private:
 	virtual void SetParticle() override;
 	virtual void SetSound() override;
 	virtual void Jump() override;
+	virtual bool CanSprint() const override;
 
 	virtual void Attack() override;
 	virtual TSubclassOf<UGameplayAbility> GetAttackAbilityClass() const override;

@@ -44,6 +44,8 @@ private:
 	virtual void SetSound() override;
 
 	virtual bool ShouldAttackTarget(const APFCharacter* Target, float SurfaceDistance) const override;
+	virtual bool ShouldApproachTarget(const APFCharacter* Target, float SurfaceDistance) const override;
+	bool HasClearSightToTarget(const APFCharacter* Target) const;
 
 	UFUNCTION()
 	void GameplayCue_Character_Attack_Twinblast_Normal_Montage(EGameplayCueEvent::Type EventType, const FGameplayCueParameters& Parameters);

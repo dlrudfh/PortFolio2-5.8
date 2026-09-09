@@ -32,6 +32,7 @@ protected:
 	float GetTargetSurfaceDistance(const APFCharacter* Candidate) const;
 
 	virtual bool ShouldAttackTarget(const APFCharacter* Target, float SurfaceDistance) const;
+	virtual bool ShouldApproachTarget(const APFCharacter* Target, float SurfaceDistance) const;
 
 	void UpdateEnemyMovement(APFCharacter* Target, float SurfaceDistance, float DeltaTime);
 

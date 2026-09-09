@@ -51,10 +51,10 @@ public:
 
 	void SetChest(class APFChest* Chest = nullptr);
 
-	virtual void GetHP(float Value);
-	virtual void GetMP(float Value);
-	virtual void GetShield();
-	virtual void GetCoin(float Value);
+	virtual bool GetHP(float Value);
+	virtual bool GetMP(float Value);
+	virtual bool GetShield();
+	virtual bool GetCoin(float Value);
 
 	void PlayPickupNiagara(ENIAGARAID PickupNiagara);
 	float GetMana() const;
@@ -115,13 +115,14 @@ protected:
 
 	UFUNCTION(Server, Unreliable)
 	virtual void Server_UpdateAimPoint(FVector AimPoint_Client);
-	FVector CalculateAimPoint() const;
+	FVector CalculateAimPoint(bool* bOutCharacterTargeted = nullptr) const;
 
 	void Ultimate();
 	UFUNCTION(Server, Reliable)
 	virtual void Server_Ultimate();
 
 	void Sprint();
+	virtual bool CanSprint() const;
 	UFUNCTION(Server, Reliable)
 	void Server_Sprint();
 
@@ -177,6 +178,7 @@ protected:
 	class UPFCharacterWidget* SelfHPBar;
 	UPROPERTY(Transient)
 	class UPFCrosshairWidget* CrosshairWidget = nullptr;
+	bool bUsesCrosshair = false;
 	bool bSelfHPBarBound = false;
 
 	UPROPERTY(ReplicatedUsing = OnRep_CurrentControlMode)

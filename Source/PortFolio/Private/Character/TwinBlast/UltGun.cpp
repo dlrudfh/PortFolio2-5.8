@@ -5,8 +5,6 @@
 #include "Animation/PFAnimInst_UltGun.h"
 #include "Animation/PFAnimInst_TwinBlast.h"
 
-using enum UPFAnimInst_UltGun::MTGIDX_UG;
-
 AUltGun::AUltGun() : MeshCom(nullptr), PFAnim(nullptr)
 {
 	PrimaryActorTick.bCanEverTick = true;

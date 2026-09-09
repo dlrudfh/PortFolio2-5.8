@@ -9,8 +9,6 @@
 #include "GameplayEffectTypes.h"
 #include "GAS/PFGameplayTags.h"
 
-using enum UPFAnimInst_Kwang::MTGIDX_K;
-
 UPFGA_Attack_Kwang::UPFGA_Attack_Kwang()
 {
 	FGameplayTagContainer AssetTags = GetAssetTags();
@@ -19,7 +17,7 @@ UPFGA_Attack_Kwang::UPFGA_Attack_Kwang()
 
 	MontageGCTag = FGameplayTag::RequestGameplayTag(FName("GameplayCue.Character.Attack.Kwang.Normal.Montage"));
 	ComboWindowEventTag = PFGameplayTags::Character_Event_Attack_ComboWindow;
-	ComboIndex = etoi(ATTACKA);
+	ComboIndex = etoi(UPFAnimInst_Kwang::MTGIDX_K::ATTACKA);
 }
 
 bool UPFGA_Attack_Kwang::CanActivateAbility(
@@ -72,9 +70,9 @@ void UPFGA_Attack_Kwang::ExecuteMontageGC(AActor* AvatarActor)
 		return;
 	}
 
-	if (ComboIndex < etoi(ATTACKA) || ComboIndex > etoi(ATTACKD))
+	if (ComboIndex < etoi(UPFAnimInst_Kwang::MTGIDX_K::ATTACKA) || ComboIndex > etoi(UPFAnimInst_Kwang::MTGIDX_K::ATTACKD))
 	{
-		ComboIndex = etoi(ATTACKA);
+		ComboIndex = etoi(UPFAnimInst_Kwang::MTGIDX_K::ATTACKA);
 	}
 
 	// 콤보 번호를 몽타주 Cue로 전달
@@ -91,7 +89,7 @@ void UPFGA_Attack_Kwang::EndAbility(
 	bool bReplicateEndAbility,
 	bool bWasCancelled)
 {
-	ComboIndex = etoi(ATTACKA);
+	ComboIndex = etoi(UPFAnimInst_Kwang::MTGIDX_K::ATTACKA);
 	SetComboWindowTag(false);
 
 	Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);
@@ -133,17 +131,17 @@ void UPFGA_Attack_Kwang::AdvanceComboIndex()
 {
 	switch (ComboIndex)
 	{
-	case etoi(ATTACKA):
-		ComboIndex = etoi(ATTACKB);
+	case etoi(UPFAnimInst_Kwang::MTGIDX_K::ATTACKA):
+		ComboIndex = etoi(UPFAnimInst_Kwang::MTGIDX_K::ATTACKB);
 		break;
-	case etoi(ATTACKB):
-		ComboIndex = etoi(ATTACKC);
+	case etoi(UPFAnimInst_Kwang::MTGIDX_K::ATTACKB):
+		ComboIndex = etoi(UPFAnimInst_Kwang::MTGIDX_K::ATTACKC);
 		break;
-	case etoi(ATTACKC):
-		ComboIndex = etoi(ATTACKD);
+	case etoi(UPFAnimInst_Kwang::MTGIDX_K::ATTACKC):
+		ComboIndex = etoi(UPFAnimInst_Kwang::MTGIDX_K::ATTACKD);
 		break;
 	default:
-		ComboIndex = etoi(ATTACKA);
+		ComboIndex = etoi(UPFAnimInst_Kwang::MTGIDX_K::ATTACKA);
 		break;
 	}
 }

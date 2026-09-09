@@ -265,24 +265,24 @@ bool FPFGE_StatGameplayEffects::ApplyShield(UAbilitySystemComponent* TargetASC)
 }
 
 // 아이템 쿨타임 효과 적용
-bool FPFGE_StatGameplayEffects::ApplyItemCooldown(UAbilitySystemComponent* TargetASC,
+FActiveGameplayEffectHandle FPFGE_StatGameplayEffects::ApplyItemCooldown(UAbilitySystemComponent* TargetASC,
 	const FGameplayTag& CooldownTag, float Duration)
 {
 	if (!TargetASC || !CooldownTag.IsValid() || Duration <= 0.f)
 	{
-		return false;
+		return FActiveGameplayEffectHandle();
 	}
 
 	FGameplayEffectSpecHandle SpecHandle = PFGE_StatGameplayEffectPrivate::MakeSpec(
 		TargetASC, UPFGE_ItemCooldown::StaticClass());
 	if (!SpecHandle.Data.IsValid())
 	{
-		return false;
+		return FActiveGameplayEffectHandle();
 	}
 
 	SpecHandle.Data->SetDuration(Duration, true);
 	SpecHandle.Data->DynamicGrantedTags.AddTag(CooldownTag);
-	return PFGE_StatGameplayEffectPrivate::ApplySpec(TargetASC, TargetASC, SpecHandle).WasSuccessfullyApplied();
+	return PFGE_StatGameplayEffectPrivate::ApplySpec(TargetASC, TargetASC, SpecHandle);
 }
 
 // 체력 회복 효과 적용

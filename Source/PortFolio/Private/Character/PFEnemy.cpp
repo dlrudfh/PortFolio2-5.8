@@ -5,6 +5,7 @@
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "AbilitySystemComponent.h"
+#include "GAS/PFGameplayTags.h"
 #include "Net/UnrealNetwork.h"
 
 APFEnemy::APFEnemy()
@@ -58,7 +59,7 @@ float APFEnemy::GetAimPitch() const
 	}
 
 	const APFCharacter* Target = TargetCharacter.Get();
-	if (!IsValid(Target))
+	if (!IsPlayerTargetValid(Target))
 	{
 		return 0.f;
 	}
@@ -114,8 +115,14 @@ void APFEnemy::Tick(float DeltaTime)
 	AttackCommandTimeRemaining -= DeltaTime;
 	PathRefreshTimeRemaining -= DeltaTime;
 
-	if (TargetRefreshTimeRemaining <= 0.f
-		|| (!TargetCharacter.IsExplicitlyNull() && !IsPlayerTargetValid(TargetCharacter.Get())))
+	const bool bLostTarget = !TargetCharacter.IsExplicitlyNull()
+		&& !IsPlayerTargetValid(TargetCharacter.Get());
+	if (bLostTarget)
+	{
+		ClearEnemyIntent();
+	}
+
+	if (TargetRefreshTimeRemaining <= 0.f || bLostTarget)
 	{
 		AcquireNearestPlayerTarget();
 		TargetRefreshTimeRemaining = TargetRefreshInterval;
@@ -192,6 +199,7 @@ bool APFEnemy::IsPlayerTargetValid(const APFCharacter* Candidate) const
 	return IsValid(Candidate)
 		&& Candidate != this
 		&& !Candidate->IsDeadCharacter()
+		&& !Candidate->HasStateTag(PFGameplayTags::Character_State_Invulnerable)
 		&& Cast<APlayerController>(Candidate->GetController()) != nullptr;
 }
 
@@ -213,6 +221,13 @@ float APFEnemy::GetTargetSurfaceDistance(const APFCharacter* Candidate) const
 bool APFEnemy::ShouldAttackTarget(const APFCharacter* Target, float SurfaceDistance) const
 {
 	return IsPlayerTargetValid(Target) && SurfaceDistance <= AttackRange;
+}
+
+// 대상 접근 조건 확인
+bool APFEnemy::ShouldApproachTarget(const APFCharacter* Target, float SurfaceDistance) const
+{
+	return IsPlayerTargetValid(Target)
+		&& SurfaceDistance > DesiredCombatDistance + DistanceTolerance;
 }
 
 // 대상과의 전투 거리 유지
@@ -251,7 +266,7 @@ void APFEnemy::UpdateEnemyMovement(APFCharacter* Target, float SurfaceDistance, 
 	DirectionToTarget.Normalize();
 
 	// 거리에 따라 접근, 후퇴, 정지
-	if (SurfaceDistance > DesiredCombatDistance + DistanceTolerance)
+	if (ShouldApproachTarget(Target, SurfaceDistance))
 	{
 		if (RefreshMovementPath(Target) && FollowMovementPath(DeltaTime))
 		{
@@ -645,7 +660,23 @@ void APFEnemy::SetEnemyDirection(EPFDirection NewDirection)
 // 공격, 이동 의도 해제
 void APFEnemy::ClearEnemyIntent()
 {
+	if (!HasAuthority())
+	{
+		return;
+	}
+
 	IsAttacking = false;
 	ClearMovementPath();
+	ConsumeMovementInputVector();
 	SetEnemyDirection(IDLE);
+
+	// 수직 속도를 유지하며 추적 이동 중단
+	if (UCharacterMovementComponent* EnemyMovementComponent = GetCharacterMovement())
+	{
+		EnemyMovementComponent->StopActiveMovement();
+		EnemyMovementComponent->Velocity.X = 0.f;
+		EnemyMovementComponent->Velocity.Y = 0.f;
+		EnemyMovementComponent->PendingLaunchVelocity = FVector::ZeroVector;
+		EnemyMovementComponent->UpdateComponentVelocity();
+	}
 }

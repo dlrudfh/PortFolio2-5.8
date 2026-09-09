@@ -291,31 +291,44 @@ void APFPlayerState::Server_UseInventoryItem_Implementation(int32 SlotIndex, APF
 		return;
 	}
 
-	if (!StartItemCooldown(UsedItemID))
+	if (!CanUseInventoryItem(UsedItemID))
+	{
+		return;
+	}
+
+	const FActiveGameplayEffectHandle CooldownHandle = StartItemCooldown(UsedItemID);
+	if (!CooldownHandle.IsValid())
 	{
 		return;
 	}
 
 	// 아이템 종류별 효과 적용
+	bool bItemEffectApplied = false;
 	switch (UsedItemID)
 	{
 	case etoi(APFItem::EITEM::ITEM_HPPOTION):
-		Character->GetHP(10.f);
+		bItemEffectApplied = Character->GetHP(10.f);
 		break;
 
 	case etoi(APFItem::EITEM::ITEM_MPPOTION):
-		Character->GetMP(10.f);
+		bItemEffectApplied = Character->GetMP(10.f);
 		break;
 
 	case etoi(APFItem::EITEM::ITEM_SHIELD):
-		Character->GetShield();
+		bItemEffectApplied = Character->GetShield();
 		break;
 
 	case etoi(APFItem::EITEM::ITEM_COIN):
-		Character->GetCoin(10.f);
+		bItemEffectApplied = Character->GetCoin(10.f);
 		break;
 
 	default:
+		break;
+	}
+
+	if (!bItemEffectApplied)
+	{
+		AbilitySystemComponent->RemoveActiveGameplayEffect(CooldownHandle);
 		return;
 	}
 
@@ -459,6 +472,31 @@ int32 APFPlayerState::FindInventorySlotIndexByItemID(int32 ItemID) const
 	return INDEX_NONE;
 }
 
+// 아이템 효과 적용 가능 여부 확인
+bool APFPlayerState::CanUseInventoryItem(int32 ItemID) const
+{
+	if (!AttributeSet)
+	{
+		return false;
+	}
+
+	switch (ItemID)
+	{
+	case etoi(APFItem::EITEM::ITEM_HPPOTION):
+		return AttributeSet->GetHealth() < AttributeSet->GetMaxHealth();
+
+	case etoi(APFItem::EITEM::ITEM_MPPOTION):
+		return AttributeSet->GetMana() < AttributeSet->GetMaxMana();
+
+	case etoi(APFItem::EITEM::ITEM_SHIELD):
+	case etoi(APFItem::EITEM::ITEM_COIN):
+		return true;
+
+	default:
+		return false;
+	}
+}
+
 // 아이템 총수량 조회
 int32 APFPlayerState::GetInventoryItemCount(int32 ItemID) const
 {
@@ -525,11 +563,11 @@ void APFPlayerState::SanitizeQuickSlots()
 }
 
 // 아이템 쿨타임 시작
-bool APFPlayerState::StartItemCooldown(int32 ItemID)
+FActiveGameplayEffectHandle APFPlayerState::StartItemCooldown(int32 ItemID)
 {
 	if (!HasAuthority() || !AbilitySystemComponent)
 	{
-		return false;
+		return FActiveGameplayEffectHandle();
 	}
 
 	const FGameplayTag CooldownTag = PFPlayerStatePrivate::GetItemCooldownTag(ItemID);
