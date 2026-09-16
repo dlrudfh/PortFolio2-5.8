@@ -17,6 +17,7 @@ public:
 	void StartSession();
 	void ShowCharacterSelection();
 	void ShowJoinFailed();
+	void SetSessionBusy(bool bBusy);
 
 protected:
 	virtual void NativeConstruct() override;
@@ -48,5 +49,6 @@ private:
 	class UTextBlock* ChooseCharacter;
 
 	bool IsCreateSession = true;
+	bool bSessionBusy = false;
 	FString SessionName;
 };

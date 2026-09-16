@@ -1,6 +1,7 @@
 #include "System/Subsystems/PFWorldSubsystem.h"
 
 #include "Projectile/Projectile.h"
+#include "GAS/Components/PFGameplayEffectTriggerComponent.h"
 #include "System/Framework/PFPoolable.h"
 #include "Kismet/GameplayStatics.h"
 
@@ -115,4 +116,33 @@ void UPFWorldSubsystem::ReleaseActor(AActor* PoolActor)
     if (!PoolActor) return;
 
     PoolContainer.FindOrAdd(PoolActor->GetClass()).AddUnique(PoolActor);
+}
+
+// 점프 금지 영역 등록
+void UPFWorldSubsystem::RegisterJumpBlockRegion(UPFGameplayEffectTriggerComponent* Region)
+{
+    JumpBlockRegions.AddUnique(Region);
+}
+
+// 점프 금지 영역 해제
+void UPFWorldSubsystem::UnregisterJumpBlockRegion(UPFGameplayEffectTriggerComponent* Region)
+{
+    JumpBlockRegions.Remove(Region);
+}
+
+// 쿼리별 점프 금지 영역 스냅샷
+void UPFWorldSubsystem::GetJumpBlockRegions(TArray<FPFJumpBlockRegion>& OutRegions) const
+{
+    OutRegions.Reset();
+    for (const TWeakObjectPtr<UPFGameplayEffectTriggerComponent>& WeakRegion : JumpBlockRegions)
+    {
+        const UPFGameplayEffectTriggerComponent* Region = WeakRegion.Get();
+        if (Region && Region->IsRegistered() && Region->IsCollisionEnabled()
+            && Region->GetGenerateOverlapEvents() && Region->GrantsJumpBlock())
+        {
+            FPFJumpBlockRegion& Snapshot = OutRegions.AddDefaulted_GetRef();
+            Snapshot.Transform = Region->GetComponentTransform();
+            Snapshot.Extent = Region->GetUnscaledBoxExtent();
+        }
+    }
 }

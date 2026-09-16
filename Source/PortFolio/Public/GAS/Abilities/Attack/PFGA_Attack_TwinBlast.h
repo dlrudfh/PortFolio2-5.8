@@ -5,7 +5,6 @@
 #include "PFGA_Attack_TwinBlast.generated.h"
 
 class APFTwinBlast;
-class APFEnemyTwinblast;
 class APFCharacter;
 class UPFAnimInst_TwinBlast;
 
@@ -31,7 +30,7 @@ protected:
 	virtual void ExecuteShootGC(int Var) const;
 
 	virtual bool TryShoot(APFTwinBlast* TwinBlast);
-	void StartShoot(APFTwinBlast* TwinBlast, APFEnemyTwinblast* EnemyTwinBlast, const FVector& AimPoint);
+	void StartShoot(APFTwinBlast* TwinBlast, const FVector& AimPoint);
 	virtual void EndAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo,
 		const FGameplayAbilityActivationInfo ActivationInfo, bool bReplicateEndAbility, bool bWasCancelled) override;
 	virtual void HandleAttackInputPressed() override;

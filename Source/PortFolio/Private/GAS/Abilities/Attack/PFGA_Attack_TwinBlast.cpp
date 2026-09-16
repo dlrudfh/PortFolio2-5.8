@@ -3,7 +3,6 @@
 #include "Abilities/Tasks/AbilityTask_WaitGameplayEvent.h"
 #include "AbilitySystemComponent.h"
 #include "Animation/PFAnimInst_TwinBlast.h"
-#include "Character/TwinBlast/PFEnemyTwinblast.h"
 #include "Character/TwinBlast/PFTwinBlast.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "GAS/PFGameplayTags.h"
@@ -47,18 +46,12 @@ bool UPFGA_Attack_TwinBlast::CanActivateAbility(
 // 트윈블라스트 공격 조건 확인
 bool UPFGA_Attack_TwinBlast::CanActivateTwinBlastAttack(const FGameplayAbilityActorInfo* ActorInfo) const
 {
-	const AActor* AvatarActor = ActorInfo ? ActorInfo->AvatarActor.Get() : nullptr;
-	const APFTwinBlast* TwinBlast = Cast<APFTwinBlast>(AvatarActor);
-	const APFEnemyTwinblast* EnemyTwinBlast = Cast<APFEnemyTwinblast>(AvatarActor);
-	const APFCharacter* Shooter = TwinBlast
-		? static_cast<const APFCharacter*>(TwinBlast)
-		: static_cast<const APFCharacter*>(EnemyTwinBlast);
-	if (!Shooter)
+	const APFTwinBlast* TwinBlast = ActorInfo ? Cast<APFTwinBlast>(ActorInfo->AvatarActor.Get()) : nullptr;
+	if (!TwinBlast)
 	{
 		return false;
 	}
-
-	return !(TwinBlast && TwinBlast->GetMovementComponent()->IsFalling() && TwinBlast->IsSprinting());
+	return !(TwinBlast->IsPlayerCharacter() && TwinBlast->GetMovementComponent()->IsFalling() && TwinBlast->IsSprinting());
 }
 
 void UPFGA_Attack_TwinBlast::WaitForEvent(AActor*)
@@ -90,41 +83,20 @@ void UPFGA_Attack_TwinBlast::OnShoot(FGameplayEventData Payload)
 	{
 		return;
 	}
-
-	AActor* AvatarActor = GetAvatarActorFromActorInfo();
-	if (!IsValid(AvatarActor))
+	APFTwinBlast* TwinBlast = Cast<APFTwinBlast>(GetAvatarActorFromActorInfo());
+	FVector AimPoint;
+	if (!IsValid(TwinBlast) || !TwinBlast->TryGetAttackAim(AimPoint))
 	{
 		FinishAbility(true);
 		return;
 	}
-
-	// 플레이어 조준점, 적 목표점으로 발사
-	if (APFTwinBlast* TwinBlast = Cast<APFTwinBlast>(AvatarActor))
-	{
-		StartShoot(TwinBlast, nullptr, TwinBlast->GetAimPoint());
-		return;
-	}
-
-	if (APFEnemyTwinblast* EnemyTwinBlast = Cast<APFEnemyTwinblast>(AvatarActor))
-	{
-		const APFCharacter* Target = EnemyTwinBlast->TargetCharacter.Get();
-		if (!EnemyTwinBlast->IsPlayerTargetValid(Target))
-		{
-			EnemyTwinBlast->ClearEnemyIntent();
-			return;
-		}
-
-		StartShoot(nullptr, EnemyTwinBlast, Target->GetActorLocation());
-		return;
-	}
-
-	FinishAbility(true);
+	StartShoot(TwinBlast, AimPoint);
 }
 
 // 총구에서 조준점으로 발사
-void UPFGA_Attack_TwinBlast::StartShoot(APFTwinBlast* TwinBlast, APFEnemyTwinblast* EnemyTwinBlast, const FVector& AimPoint)
+void UPFGA_Attack_TwinBlast::StartShoot(APFTwinBlast* TwinBlast, const FVector& AimPoint)
 {
-	APFCharacter* Shooter = TwinBlast ? static_cast<APFCharacter*>(TwinBlast) : static_cast<APFCharacter*>(EnemyTwinBlast);
+	APFCharacter* Shooter = TwinBlast;
 	if (!Shooter || !Shooter->HasAuthority())
 	{
 		FinishAbility(true);
@@ -145,13 +117,17 @@ void UPFGA_Attack_TwinBlast::StartShoot(APFTwinBlast* TwinBlast, APFEnemyTwinbla
 	}
 
 	// 총구, 발사 방향 계산
-	const bool bShootLeft = TwinBlast ? TwinBlast->ShootLeft : EnemyTwinBlast->bShootLeft;
+	const bool bShootLeft = TwinBlast->ShootLeft;
 	const FName SocketName = bShootLeft ? LeftMuzzleSocket : RightMuzzleSocket;
 
 	USkeletalMeshComponent* Mesh = Shooter->GetMesh();
 	const FVector MuzzleLocation = Mesh->GetSocketLocation(SocketName);
-	const FVector AimDirection = (AimPoint - MuzzleLocation).GetSafeNormal();
-	const FRotator BulletRotation = AimDirection.IsNearlyZero() ? Shooter->GetActorRotation() : AimDirection.Rotation();
+	FRotator BulletRotation = Mesh->GetSocketRotation(SocketName);
+	if (!TwinBlast->IsPlayerCharacter() || TwinBlast->GetCurrentControlMode() != TOPVIEW)
+	{
+		const FVector AimDirection = (AimPoint - MuzzleLocation).GetSafeNormal();
+		BulletRotation = AimDirection.IsNearlyZero() ? Shooter->GetActorRotation() : AimDirection.Rotation();
+	}
 
 	// 풀에서 총알 생성, 피해 출처 전달
 	if (UPFWorldSubsystem* Pool = World->GetSubsystem<UPFWorldSubsystem>())
@@ -167,14 +143,7 @@ void UPFGA_Attack_TwinBlast::StartShoot(APFTwinBlast* TwinBlast, APFEnemyTwinbla
 
 	// 발사 연출, 다음 총구 방향 반영
 	ExecuteShootGC(bShootLeft);
-	if (TwinBlast)
-	{
-		TwinBlast->ShootLeft = !TwinBlast->ShootLeft;
-	}
-	else
-	{
-		EnemyTwinBlast->bShootLeft = !EnemyTwinBlast->bShootLeft;
-	}
+	TwinBlast->ShootLeft = !TwinBlast->ShootLeft;
 
 	bShotFired = true;
 	TryContinueCombo();
@@ -230,11 +199,14 @@ void UPFGA_Attack_TwinBlast::ExecuteMontageGC(AActor* AvatarActor)
 	const FGameplayAbilityActorInfo* ActorInfo = GetCurrentActorInfo();
 	UAbilitySystemComponent* AbilitySystem = ActorInfo->AbilitySystemComponent.Get();
 	APFTwinBlast* TwinBlast = Cast<APFTwinBlast>(AvatarActor);
-	APFEnemyTwinblast* EnemyTwinBlast = TwinBlast ? nullptr : Cast<APFEnemyTwinblast>(AvatarActor);
+	if (!TwinBlast || !AbilitySystem)
+	{
+		return;
+	}
 
 	// 발사할 총구 방향을 몽타주 Cue로 전달
 	FGameplayCueParameters GCParameters;
-	GCParameters.RawMagnitude = (TwinBlast ? TwinBlast->ShootLeft : EnemyTwinBlast->bShootLeft) ? 1.f : 0.f;
+	GCParameters.RawMagnitude = TwinBlast->ShootLeft ? 1.f : 0.f;
 	AbilitySystem->ExecuteGameplayCue(MontageGCTag, GCParameters);
 }
 

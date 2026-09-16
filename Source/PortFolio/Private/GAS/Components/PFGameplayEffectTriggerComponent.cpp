@@ -7,6 +7,7 @@
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "UObject/ConstructorHelpers.h"
+#include "System/Subsystems/PFWorldSubsystem.h"
 
 UPFGameplayEffectTriggerComponent::UPFGameplayEffectTriggerComponent()
 {
@@ -47,12 +48,47 @@ void UPFGameplayEffectTriggerComponent::OnRegister()
 		SetCollisionResponseToChannel(PFCharacterCollisionChannel, ECR_Overlap);
 	}
 	AutoFitToOwnerCollision();
+	if (HasBegunPlay() && GetWorld())
+	{
+		if (UPFWorldSubsystem* WorldSubsystem = GetWorld()->GetSubsystem<UPFWorldSubsystem>())
+		{
+			WorldSubsystem->RegisterJumpBlockRegion(this);
+		}
+	}
 }
 
 void UPFGameplayEffectTriggerComponent::OnAttachmentChanged()
 {
 	Super::OnAttachmentChanged();
 	AutoFitToOwnerCollision();
+}
+
+void UPFGameplayEffectTriggerComponent::BeginPlay()
+{
+	Super::BeginPlay();
+	if (UPFWorldSubsystem* WorldSubsystem = GetWorld()->GetSubsystem<UPFWorldSubsystem>())
+	{
+		WorldSubsystem->RegisterJumpBlockRegion(this);
+	}
+}
+
+void UPFGameplayEffectTriggerComponent::OnUnregister()
+{
+	if (UWorld* World = GetWorld())
+	{
+		if (UPFWorldSubsystem* WorldSubsystem = World->GetSubsystem<UPFWorldSubsystem>())
+		{
+			WorldSubsystem->UnregisterJumpBlockRegion(this);
+		}
+	}
+	Super::OnUnregister();
+}
+
+// 영역 효과의 점프 차단 태그 확인
+bool UPFGameplayEffectTriggerComponent::GrantsJumpBlock() const
+{
+	const UGameplayEffect* Effect = EffectClass ? EffectClass.GetDefaultObject() : nullptr;
+	return Effect && Effect->GetGrantedTags().HasTag(FGameplayTag::RequestGameplayTag(TEXT("Character.Block.Jump")));
 }
 
 // 영역 크기 기준 컴포넌트 탐색

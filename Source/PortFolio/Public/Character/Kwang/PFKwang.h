@@ -1,14 +1,14 @@
 #pragma once
 
-#include "Character/PFPlayer.h"
+#include "Character/PFCharacter.h"
 
 #include "PFKwang.generated.h"
 
 class UPFGA_Attack_Kwang;
 
-// 광 플레이어 클래스
+// 광 캐릭터 클래스
 UCLASS(meta=(PrioritizeCategories="PFCharacter Camera UI Chest GAS"))
-class PORTFOLIO_API APFKwang : public APFPlayer
+class PORTFOLIO_API APFKwang : public APFCharacter
 {
 	GENERATED_BODY()
 

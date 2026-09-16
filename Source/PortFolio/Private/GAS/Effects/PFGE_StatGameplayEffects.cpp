@@ -160,16 +160,16 @@ UPFGE_ManaRegen::UPFGE_ManaRegen()
 UPFGE_MaxHealthUpgrade::UPFGE_MaxHealthUpgrade()
 {
 	DurationPolicy = EGameplayEffectDurationType::Instant;
-	PFGE_StatGameplayEffectPrivate::AddConstantModifier(*this, UPFAttributeSet::GetMaxHealthAttribute(), EGameplayModOp::Additive, 1.f);
-	PFGE_StatGameplayEffectPrivate::AddConstantModifier(*this, UPFAttributeSet::GetHealthAttribute(), EGameplayModOp::Additive, 1.f);
+	PFGE_StatGameplayEffectPrivate::AddConstantModifier(*this, UPFAttributeSet::GetMaxHealthAttribute(), EGameplayModOp::Additive, 10.f);
+	PFGE_StatGameplayEffectPrivate::AddConstantModifier(*this, UPFAttributeSet::GetHealthAttribute(), EGameplayModOp::Additive, 10.f);
 	PFGE_StatGameplayEffectPrivate::AddConstantModifier(*this, UPFAttributeSet::GetStatPointAttribute(), EGameplayModOp::Additive, -1.f);
 }
 
 UPFGE_MaxManaUpgrade::UPFGE_MaxManaUpgrade()
 {
 	DurationPolicy = EGameplayEffectDurationType::Instant;
-	PFGE_StatGameplayEffectPrivate::AddConstantModifier(*this, UPFAttributeSet::GetMaxManaAttribute(), EGameplayModOp::Additive, 1.f);
-	PFGE_StatGameplayEffectPrivate::AddConstantModifier(*this, UPFAttributeSet::GetManaAttribute(), EGameplayModOp::Additive, 1.f);
+	PFGE_StatGameplayEffectPrivate::AddConstantModifier(*this, UPFAttributeSet::GetMaxManaAttribute(), EGameplayModOp::Additive, 10.f);
+	PFGE_StatGameplayEffectPrivate::AddConstantModifier(*this, UPFAttributeSet::GetManaAttribute(), EGameplayModOp::Additive, 10.f);
 	PFGE_StatGameplayEffectPrivate::AddConstantModifier(*this, UPFAttributeSet::GetStatPointAttribute(), EGameplayModOp::Additive, -1.f);
 }
 

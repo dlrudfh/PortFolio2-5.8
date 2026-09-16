@@ -1,6 +1,6 @@
 #include "UI/Inventory/PFInventoryWidget.h"
 
-#include "Character/PFPlayer.h"
+#include "Character/PFCharacter.h"
 #include "UI/Inventory/PFCooldownOverlayWidget.h"
 #include "Props/PFItem.h"
 #include "System/Framework/PFPlayerState.h"
@@ -870,7 +870,7 @@ FReply UPFInventoryWidget::NativeOnMouseButtonDoubleClick(const FGeometry& InGeo
 		return Super::NativeOnMouseButtonDoubleClick(InGeometry, InMouseEvent);
 	}
 
-	APFPlayer* Character = Cast<APFPlayer>(GetOwningPlayerPawn());
+	APFCharacter* Character = Cast<APFCharacter>(GetOwningPlayerPawn());
 	if (!Character)
 	{
 		return Super::NativeOnMouseButtonDoubleClick(InGeometry, InMouseEvent);

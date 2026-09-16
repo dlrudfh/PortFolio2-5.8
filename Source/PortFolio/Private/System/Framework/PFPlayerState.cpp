@@ -4,7 +4,7 @@
 #include "System/Framework/PFGameInstance.h"
 #include "GAS/Effects/PFGE_StatGameplayEffects.h"
 #include "GAS/PFGameplayTags.h"
-#include "Character/PFPlayer.h"
+#include "Character/PFCharacter.h"
 #include "Props/PFItem.h"
 
 namespace PFPlayerStatePrivate
@@ -250,7 +250,7 @@ bool APFPlayerState::AddInventoryItemInternal(int32 ItemID, int32 Count)
 }
 
 // 인벤토리 아이템 사용 요청
-void APFPlayerState::UseInventoryItem(int32 SlotIndex, APFPlayer* Character)
+void APFPlayerState::UseInventoryItem(int32 SlotIndex, APFCharacter* Character)
 {
 	if (HasAuthority())
 	{
@@ -262,10 +262,11 @@ void APFPlayerState::UseInventoryItem(int32 SlotIndex, APFPlayer* Character)
 }
 
 // 서버 아이템 사용, 수량 차감
-void APFPlayerState::Server_UseInventoryItem_Implementation(int32 SlotIndex, APFPlayer* Character)
+void APFPlayerState::Server_UseInventoryItem_Implementation(int32 SlotIndex, APFCharacter* Character)
 {
-	APFPlayer* CurrentPlayer = Cast<APFPlayer>(GetPawn());
+	APFCharacter* CurrentPlayer = Cast<APFCharacter>(GetPawn());
 	if (!HasAuthority() || !IsValid(CurrentPlayer) || Character != CurrentPlayer
+		|| !CurrentPlayer->IsPlayerCharacter() || !CurrentPlayer->IsPlayerControlled()
 		|| CurrentPlayer->GetPlayerState<APFPlayerState>() != this || CurrentPlayer->IsDeadCharacter())
 	{
 		return;
@@ -382,7 +383,7 @@ void APFPlayerState::Server_AssignQuickSlot_Implementation(int32 QuickSlotIndex,
 }
 
 // 퀵슬롯 사용 요청
-void APFPlayerState::UseQuickSlot(int32 QuickSlotIndex, APFPlayer* Character)
+void APFPlayerState::UseQuickSlot(int32 QuickSlotIndex, APFCharacter* Character)
 {
 	if (HasAuthority())
 	{
@@ -394,10 +395,11 @@ void APFPlayerState::UseQuickSlot(int32 QuickSlotIndex, APFPlayer* Character)
 }
 
 // 퀵슬롯의 인벤토리 아이템 사용
-void APFPlayerState::Server_UseQuickSlot_Implementation(int32 QuickSlotIndex, APFPlayer* Character)
+void APFPlayerState::Server_UseQuickSlot_Implementation(int32 QuickSlotIndex, APFCharacter* Character)
 {
-	APFPlayer* CurrentPlayer = Cast<APFPlayer>(GetPawn());
+	APFCharacter* CurrentPlayer = Cast<APFCharacter>(GetPawn());
 	if (!HasAuthority() || !IsValid(CurrentPlayer) || Character != CurrentPlayer
+		|| !CurrentPlayer->IsPlayerCharacter() || !CurrentPlayer->IsPlayerControlled()
 		|| CurrentPlayer->GetPlayerState<APFPlayerState>() != this || CurrentPlayer->IsDeadCharacter())
 	{
 		return;

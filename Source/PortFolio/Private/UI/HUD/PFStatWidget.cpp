@@ -15,9 +15,6 @@
 #include "Components/VerticalBox.h"
 #include "Components/VerticalBoxSlot.h"
 #include "GameFramework/Pawn.h"
-#include "Interfaces/OnlineIdentityInterface.h"
-#include "OnlineSubsystem.h"
-#include "OnlineSubsystemNames.h"
 
 TSharedRef<SWidget> UPFStatWidget::RebuildWidget()
 {
@@ -305,30 +302,9 @@ UPFAttributeSet* UPFStatWidget::GetCurrentAttributeSet() const
 // 온라인 닉네임, 플레이어 이름 조회
 FString UPFStatWidget::ResolveUsername() const
 {
-	if (IOnlineSubsystem* SteamSubsystem = IOnlineSubsystem::Get(STEAM_SUBSYSTEM))
+	if (const APFPlayerController* PlayerController = Cast<APFPlayerController>(GetOwningPlayer()))
 	{
-		const IOnlineIdentityPtr IdentityInterface = SteamSubsystem->GetIdentityInterface();
-		if (IdentityInterface.IsValid() && IdentityInterface->GetLoginStatus(0) == ELoginStatus::LoggedIn)
-		{
-			const FString SteamNickname = IdentityInterface->GetPlayerNickname(0);
-			if (!SteamNickname.IsEmpty())
-			{
-				return SteamNickname;
-			}
-		}
-	}
-
-	if (APFPlayerController* PlayerController = Cast<APFPlayerController>(GetOwningPlayer()))
-	{
-		if (APFPlayerState* PFPlayerState = PlayerController->GetPlayerState<APFPlayerState>())
-		{
-			FString PlayerName = PFPlayerState->GetPlayerName();
-			PlayerName.TrimStartAndEndInline();
-			if (!PlayerName.IsEmpty())
-			{
-				return PlayerName;
-			}
-		}
+		return PlayerController->GetUsername();
 	}
 
 	return TEXT("Offline Player");

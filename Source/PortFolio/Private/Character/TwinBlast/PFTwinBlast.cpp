@@ -7,7 +7,6 @@
 #include "GAS/Abilities/Attack/PFGA_Attack_TwinBlast.h"
 #include "GAS/Abilities/Attack/PFGA_Attack_TwinBlast_Ultimate.h"
 #include "GAS/Abilities/Ultimate/PFGA_Ultimate_TwinBlast.h"
-#include "UI/HUD/PFCrosshairWidget.h"
 #include "Character/TwinBlast/UltGun.h"
 #include "Kismet/GameplayStatics.h"
 #include "Particles/ParticleSystem.h"
@@ -16,7 +15,12 @@
 
 APFTwinBlast::APFTwinBlast() : ShootLeft(true), UltGun(nullptr), UltShoulderEffect(nullptr)
 {
-	bUsesCrosshair = true;
+	bHasCrosshair = true;
+	AISettings.DesiredCombatDistance = 1000.f;
+	AISettings.DistanceTolerance = 0.f;
+	AISettings.AttackRange = 2000.f;
+	AISettings.bRetreatWhenTooClose = true;
+	AISettings.bRequiresLineOfSight = true;
 	AttackAbilityClass = UPFGA_Attack_TwinBlast::StaticClass();
 	UltimateAttackAbilityClass = UPFGA_Attack_TwinBlast_Ultimate::StaticClass();
 	UltimateAbilityClass = UPFGA_Ultimate_TwinBlast::StaticClass();
@@ -28,6 +32,7 @@ APFTwinBlast::APFTwinBlast() : ShootLeft(true), UltGun(nullptr), UltShoulderEffe
 
 void APFTwinBlast::InitAbilityActorInfo()
 {
+	EnsureUltimatePresentation();
 	Super::InitAbilityActorInfo();
 	GiveUltimateAttackAbility();
 }
@@ -35,7 +40,7 @@ void APFTwinBlast::InitAbilityActorInfo()
 // 궁극기 공격 어빌리티 부여
 void APFTwinBlast::GiveUltimateAttackAbility()
 {
-	if (!HasAuthority() || !ASC || !UltimateAttackAbilityClass)
+	if (!HasAuthority() || !IsPlayerCharacter() || !ASC || !UltimateAttackAbilityClass)
 	{
 		return;
 	}
@@ -55,18 +60,6 @@ void APFTwinBlast::PostInitializeComponents()
 
 	GetMesh()->SetCollisionProfileName(TEXT("PFCharacter"));
 
-	// 궁극기 총 생성, 부착
-	UltGun = GetWorld()->SpawnActor<AUltGun>(AUltGun::StaticClass(), GetMesh()->GetSocketLocation(FName("UltGunAttach")), GetActorRotation());
-	
-	if (UltGun)
-	{
-		UltGun->AttachToComponent(GetMesh(), FAttachmentTransformRules::SnapToTargetIncludingScale, FName("UltGunAttach"));
-		PFLOG(Warning, TEXT("UltGun Spawn Succeed"));
-	}
-	else
-	{
-		PFLOG(Warning, TEXT("UltGun Spawn Failed"));
-	}
 }
 
 void APFTwinBlast::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -93,21 +86,6 @@ void APFTwinBlast::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 
-	// 조준 대상 표시, 공격 중 서버 조준점 갱신
-	if (IsLocallyControlled())
-	{
-		bool bCharacterTargeted = false;
-		const FVector CurrentAimPoint = CalculateAimPoint(&bCharacterTargeted);
-		if (CrosshairWidget)
-		{
-			CrosshairWidget->SetCharacterTargeted(bCharacterTargeted);
-		}
-		if (IsAttackCommandActive())
-		{
-			Server_UpdateAimPoint(CurrentAimPoint);
-		}
-	}
-
 	// 궁극기 이동 속도 적용
 	if (IsUltimateActive())
 	{
@@ -115,9 +93,9 @@ void APFTwinBlast::Tick(float DeltaTime)
 	}
 }
 
-void APFTwinBlast::SetDir()
+void APFTwinBlast::OnRep_FinalDir()
 {
-	Super::SetDir();
+	Super::OnRep_FinalDir();
 	if (UltGun)
 	{
 		UltGun->SetCurrentDir(FinalDir);
@@ -229,21 +207,9 @@ void APFTwinBlast::Jump()
 	Super::Jump();
 }
 
-// 궁극기 중 질주 차단
 bool APFTwinBlast::CanSprint() const
 {
 	return !IsUltimateActive();
-}
-
-void APFTwinBlast::Attack()
-{
-	if (IsDeadCharacter() || !IsLocallyControlled())
-	{
-		return;
-	}
-
-	Server_UpdateAimPoint(CalculateAimPoint());
-	Super::Attack();
 }
 
 TSubclassOf<UGameplayAbility> APFTwinBlast::GetAttackAbilityClass() const
@@ -257,7 +223,10 @@ TSubclassOf<UGameplayAbility> APFTwinBlast::GetAttackAbilityClass() const
 // 궁극기 상태 전환
 void APFTwinBlast::ToggleUltimateState()
 {
-	SetReplicatedStateTag(PFGameplayTags::Character_State_Ultimate, !IsUltimateActive());
+	if (HasAuthority() && IsPlayerCharacter())
+	{
+		SetReplicatedStateTag(PFGameplayTags::Character_State_Ultimate, !IsUltimateActive());
+	}
 }
 
 // 궁극기 활성 여부 조회
@@ -291,8 +260,7 @@ void APFTwinBlast::ApplyUltimateState()
 
 	GetCharacterMovement()->StopMovementImmediately();
 	FinalDir = IDLE;
-	UpDownDir = IDLE;
-	LeftRightDir = IDLE;
+	MovementInputDirection = IDLE;
 	PFAnim->SetCurrentDir(IDLE);
 	if (UltGun) UltGun->SetCurrentDir(IDLE);
 
@@ -465,4 +433,26 @@ void APFTwinBlast::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLife
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
 	DOREPLIFETIME(APFTwinBlast, ShootLeft);
+}
+
+// 플레이어 궁극기 총 준비
+void APFTwinBlast::EnsureUltimatePresentation()
+{
+	if (!IsPlayerCharacter() || IsValid(UltGun) || !GetWorld() || GetNetMode() == NM_DedicatedServer)
+	{
+		return;
+	}
+	// 궁극기 총 생성, 부착
+	UltGun = GetWorld()->SpawnActor<AUltGun>(AUltGun::StaticClass(), GetMesh()->GetSocketLocation(FName("UltGunAttach")), GetActorRotation());
+
+	if (UltGun)
+	{
+		UltGun->AttachToComponent(GetMesh(), FAttachmentTransformRules::SnapToTargetIncludingScale, FName("UltGunAttach"));
+		PFLOG(Warning, TEXT("UltGun Spawn Succeed"));
+	}
+	else
+	{
+		PFLOG(Warning, TEXT("UltGun Spawn Failed"));
+	}
+
 }

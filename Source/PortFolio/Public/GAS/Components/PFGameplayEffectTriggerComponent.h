@@ -19,9 +19,12 @@ class PORTFOLIO_API UPFGameplayEffectTriggerComponent : public UBoxComponent
 
 public:
 	UPFGameplayEffectTriggerComponent();
+	bool GrantsJumpBlock() const;
 
 protected:
 	virtual void OnRegister() override;
+	virtual void OnUnregister() override;
+	virtual void BeginPlay() override;
 
 	virtual void OnAttachmentChanged() override;
 

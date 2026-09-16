@@ -102,6 +102,11 @@ void UPFTitle::NativeConstruct()
 // 생성할 세션 이름 입력
 void UPFTitle::CreateSessionNameInput()
 {
+	if (bSessionBusy)
+	{
+		return;
+	}
+
 	IsCreateSession = true;
 	SessionNameInputBox->SetKeyboardFocus();
 	SessionNameInputBox->SetVisibility(ESlateVisibility::Visible);
@@ -110,6 +115,11 @@ void UPFTitle::CreateSessionNameInput()
 // 참가할 세션 이름 입력
 void UPFTitle::JoinSessionNameInput()
 {
+	if (bSessionBusy)
+	{
+		return;
+	}
+
 	IsCreateSession = false;
 	SessionNameInputBox->SetKeyboardFocus();
 	SessionNameInputBox->SetVisibility(ESlateVisibility::Visible);
@@ -118,22 +128,23 @@ void UPFTitle::JoinSessionNameInput()
 // 세션 이름 입력 완료 처리
 void UPFTitle::InputComplete(const FText& Text, ETextCommit::Type CommitMethod)
 {
+	if (bSessionBusy)
+	{
+		return;
+	}
+
 	if (CommitMethod == ETextCommit::OnEnter)
 	{
 		SessionName = Text.ToString();
 
 		if (IsCreateSession)
 		{
-			ChooseCharacter->SetVisibility(ESlateVisibility::Visible);
-			TitleUI->SetVisibility(ESlateVisibility::Hidden);
+			ShowCharacterSelection();
 		}
 		else
 		{
-			if (GetWorld()->GetGameInstance<UPFGameInstance>()->JoinGameSession(SessionName))
-			{
-				SessionNameInputBox->SetVisibility(ESlateVisibility::Hidden);
-			}
-			else
+			SessionNameInputBox->SetVisibility(ESlateVisibility::Hidden);
+			if (!GetWorld()->GetGameInstance<UPFGameInstance>()->JoinGameSession(SessionName))
 			{
 				PFLOG(Warning, TEXT("Invalid Session"));
 			}
@@ -144,6 +155,7 @@ void UPFTitle::InputComplete(const FText& Text, ETextCommit::Type CommitMethod)
 // 캐릭터 선택 화면 표시
 void UPFTitle::ShowCharacterSelection()
 {
+	SetSessionBusy(false);
 	ChooseCharacter->SetVisibility(ESlateVisibility::Visible);
 	TitleUI->SetVisibility(ESlateVisibility::Hidden);
 	SessionNameInputBox->SetVisibility(ESlateVisibility::Hidden);
@@ -152,16 +164,34 @@ void UPFTitle::ShowCharacterSelection()
 // 참가 실패 시 입력 화면 복원
 void UPFTitle::ShowJoinFailed()
 {
+	SetSessionBusy(false);
 	ChooseCharacter->SetVisibility(ESlateVisibility::Hidden);
 	TitleUI->SetVisibility(ESlateVisibility::Visible);
 	SessionNameInputBox->SetVisibility(ESlateVisibility::Visible);
 	SessionNameInputBox->SetKeyboardFocus();
 }
 
+// 세션 처리 중 중복 입력 차단
+void UPFTitle::SetSessionBusy(bool bBusy)
+{
+	bSessionBusy = bBusy;
+	CreateSessionButton->SetIsEnabled(!bBusy);
+	JoinSessionButton->SetIsEnabled(!bBusy);
+	SessionNameInputBox->SetIsEnabled(!bBusy);
+	ExitGameButton->SetIsEnabled(true);
+
+	if (bBusy)
+	{
+		TitleUI->SetVisibility(ESlateVisibility::Visible);
+		ChooseCharacter->SetVisibility(ESlateVisibility::Hidden);
+		SessionNameInputBox->SetVisibility(ESlateVisibility::Hidden);
+	}
+}
+
 // 캐릭터 선택 후 세션 시작
 void UPFTitle::StartSession()
 {
-	if (ChooseCharacter->GetVisibility() != ESlateVisibility::Visible)
+	if (bSessionBusy || !IsInViewport() || ChooseCharacter->GetVisibility() != ESlateVisibility::Visible)
 	{
 		return;
 	}
@@ -170,20 +200,17 @@ void UPFTitle::StartSession()
 	{
 		PFLOG(Warning, TEXT("CreateSession"));
 		GetWorld()->GetGameInstance<UPFGameInstance>()->CreateGameSession(SessionName);
-		RemoveFromParent();
 	}
 	else
 	{
 		PFLOG(Warning, TEXT("JoinSession"));
 		GetWorld()->GetGameInstance<UPFGameInstance>()->StartGame();
-		RemoveFromParent();
 	}
 }
 
-// 종료 요청, 타이틀 제거
+// 게임 종료 요청
 void UPFTitle::ExitGame()
 {
 	PFLOG(Warning, TEXT("Exit Game"));
 	GetWorld()->GetGameInstance<UPFGameInstance>()->ExitGame();
-	RemoveFromParent();
 }

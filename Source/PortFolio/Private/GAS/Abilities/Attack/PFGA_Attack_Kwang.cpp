@@ -3,7 +3,6 @@
 #include "Abilities/Tasks/AbilityTask_WaitGameplayEvent.h"
 #include "AbilitySystemComponent.h"
 #include "Animation/PFAnimInst_Kwang.h"
-#include "Character/Kwang/PFEnemyKwang.h"
 #include "Character/Kwang/PFKwang.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameplayEffectTypes.h"
@@ -34,17 +33,13 @@ bool UPFGA_Attack_Kwang::CanActivateAbility(
 
 	const AActor* AvatarActor = ActorInfo ? ActorInfo->AvatarActor.Get() : nullptr;
 	const APFKwang* Kwang = Cast<APFKwang>(AvatarActor);
-	const APFEnemyKwang* EnemyKwang = Cast<APFEnemyKwang>(AvatarActor);
-	const APFCharacter* Attacker = Kwang
-		? static_cast<const APFCharacter*>(Kwang)
-		: static_cast<const APFCharacter*>(EnemyKwang);
-	if (!Attacker)
+	if (!Kwang)
 	{
 		return false;
 	}
 
 	const UCharacterMovementComponent* CharacterMovement = Kwang ? Kwang->GetCharacterMovement() : nullptr;
-	return !(Kwang && CharacterMovement && CharacterMovement->IsFalling() && Kwang->IsSprinting());
+	return !(Kwang->IsPlayerCharacter() && CharacterMovement && CharacterMovement->IsFalling() && Kwang->IsSprinting());
 }
 
 void UPFGA_Attack_Kwang::WaitForEvent(AActor* AvatarActor)
@@ -64,7 +59,7 @@ void UPFGA_Attack_Kwang::ExecuteMontageGC(AActor* AvatarActor)
 	const FGameplayAbilityActorInfo* ActorInfo = GetCurrentActorInfo();
 	UAbilitySystemComponent* AbilitySystem = ActorInfo ? ActorInfo->AbilitySystemComponent.Get() : nullptr;
 	const bool bIsKwangAvatar = AvatarActor
-		&& (AvatarActor->IsA<APFKwang>() || AvatarActor->IsA<APFEnemyKwang>());
+		&& AvatarActor->IsA<APFKwang>();
 	if (!AbilitySystem || !bIsKwangAvatar)
 	{
 		return;

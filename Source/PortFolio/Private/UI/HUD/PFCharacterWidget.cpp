@@ -1,15 +1,86 @@
 #include "UI/HUD/PFCharacterWidget.h"
 #include "Components/TextBlock.h"
 #include "Components/ProgressBar.h"
+#include "Styling/CoreStyle.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
+
+TSharedRef<SWidget> UPFCharacterWidget::RebuildWidget()
+{
+	TSharedRef<SWidget> HealthWidget = Super::RebuildWidget();
+
+	// 체력바 위에 플레이어 이름 배치
+	return SNew(SVerticalBox)
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.HAlign(HAlign_Center)
+		[
+			SAssignNew(UsernameBox, SBox)
+			.MaxDesiredWidth(300.f)
+			.Padding(FMargin(0.f, 0.f, 0.f, 4.f))
+			.Clipping(EWidgetClipping::ClipToBounds)
+			.Visibility(DisplayUsername.IsEmpty() ? EVisibility::Collapsed : EVisibility::HitTestInvisible)
+			[
+				SAssignNew(UsernameText, STextBlock)
+				.Text(FText::FromString(DisplayUsername))
+				.Font(FCoreStyle::GetDefaultFontStyle(TEXT("Bold"), 24))
+				.ColorAndOpacity(FLinearColor::White)
+				.ShadowColorAndOpacity(FLinearColor::Black)
+				.ShadowOffset(FVector2D(1.f, 1.f))
+				.Justification(ETextJustify::Center)
+				.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+			]
+		]
+		+ SVerticalBox::Slot()
+		.FillHeight(1.f)
+		[
+			HealthWidget
+		];
+}
+
+void UPFCharacterWidget::ReleaseSlateResources(bool bReleaseChildren)
+{
+	Super::ReleaseSlateResources(bReleaseChildren);
+	UsernameBox.Reset();
+	UsernameText.Reset();
+}
+
+// 플레이어 이름, 표시 여부 갱신
+void UPFCharacterWidget::SetDisplayUsername(const FString& NewUsername)
+{
+	if (DisplayUsername == NewUsername)
+	{
+		return;
+	}
+
+	DisplayUsername = NewUsername;
+	if (UsernameText.IsValid())
+	{
+		UsernameText->SetText(FText::FromString(DisplayUsername));
+	}
+	if (UsernameBox.IsValid())
+	{
+		UsernameBox->SetVisibility(DisplayUsername.IsEmpty() ? EVisibility::Collapsed : EVisibility::HitTestInvisible);
+	}
+}
 
 // 스탯 참조, 변경 이벤트 연결
 void UPFCharacterWidget::BindAttributeSet(UPFAttributeSet* NewAttributeSet, bool IsLocal)
 {
-	PFCHECK(NewAttributeSet);
+	if (UPFAttributeSet* PreviousAttributeSet = CurrentAttributeSet.Get())
+	{
+		PreviousAttributeSet->OnHealthChanged.RemoveAll(this);
+		PreviousAttributeSet->OnManaChanged.RemoveAll(this);
+	}
 	CurrentAttributeSet = NewAttributeSet;
 	IsLocalPlayer = IsLocal;
-	NewAttributeSet->OnHealthChanged.AddUObject(this, &UPFCharacterWidget::UpdateHPWidget);
-	NewAttributeSet->OnManaChanged.AddUObject(this, &UPFCharacterWidget::UpdateMPWidget);
+	if (NewAttributeSet)
+	{
+		NewAttributeSet->OnHealthChanged.AddUObject(this, &UPFCharacterWidget::UpdateHPWidget);
+		NewAttributeSet->OnManaChanged.AddUObject(this, &UPFCharacterWidget::UpdateMPWidget);
+	}
+	UpdateAllWidget();
 }
 
 void UPFCharacterWidget::NativeConstruct()

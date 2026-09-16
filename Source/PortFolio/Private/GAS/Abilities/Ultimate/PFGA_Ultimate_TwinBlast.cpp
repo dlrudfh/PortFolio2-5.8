@@ -36,7 +36,7 @@ bool UPFGA_Ultimate_TwinBlast::CanActivateAbility(
 	const UCharacterMovementComponent* CharacterMovementComponent = TwinBlast
 		? TwinBlast->GetCharacterMovement()
 		: nullptr;
-	return TwinBlast && CharacterMovementComponent && !CharacterMovementComponent->IsFalling();
+	return TwinBlast && TwinBlast->IsPlayerCharacter() && CharacterMovementComponent && !CharacterMovementComponent->IsFalling();
 }
 
 void UPFGA_Ultimate_TwinBlast::ActivateAbility(
@@ -50,7 +50,7 @@ void UPFGA_Ultimate_TwinBlast::ActivateAbility(
 	APFTwinBlast* TwinBlast = ActorInfo
 		? Cast<APFTwinBlast>(ActorInfo->AvatarActor.Get())
 		: nullptr;
-	if (!TwinBlast || !TwinBlast->HasAuthority())
+	if (!TwinBlast || !TwinBlast->IsPlayerCharacter() || !TwinBlast->HasAuthority())
 	{
 		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
 		return;

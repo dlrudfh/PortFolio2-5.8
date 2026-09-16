@@ -70,17 +70,17 @@ public:
 
 	bool AddInventoryItem(int32 ItemID, int32 Count = 1);
 
-	void UseInventoryItem(int32 SlotIndex, class APFPlayer* Character);
+	void UseInventoryItem(int32 SlotIndex, class APFCharacter* Character);
 	UFUNCTION(Server, Reliable)
-	void Server_UseInventoryItem(int32 SlotIndex, class APFPlayer* Character);
+	void Server_UseInventoryItem(int32 SlotIndex, class APFCharacter* Character);
 
 	void AssignQuickSlot(int32 QuickSlotIndex, int32 ItemID);
 	UFUNCTION(Server, Reliable)
 	void Server_AssignQuickSlot(int32 QuickSlotIndex, int32 ItemID);
 
-	void UseQuickSlot(int32 QuickSlotIndex, class APFPlayer* Character);
+	void UseQuickSlot(int32 QuickSlotIndex, class APFCharacter* Character);
 	UFUNCTION(Server, Reliable)
-	void Server_UseQuickSlot(int32 QuickSlotIndex, class APFPlayer* Character);
+	void Server_UseQuickSlot(int32 QuickSlotIndex, class APFCharacter* Character);
 
 	void MoveInventorySlot(int32 FromIndex, int32 ToIndex);
 	UFUNCTION(Server, Reliable)

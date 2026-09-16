@@ -2,7 +2,7 @@
 
 #include "PortFolio/PortFolio.h"
 
-#include "Character/PFPlayer.h"
+#include "Character/PFCharacter.h"
 #include "System/Framework/PFGameInstance.h"
 #include "NiagaraComponent.h"
 #include "GameFramework/Actor.h"
@@ -31,6 +31,7 @@ public:
 public:	
 	APFItem();
 	void SetItemData(int ItemID);
+	void UseItem(APFCharacter* Character);
 	UFUNCTION(Server, Reliable, WithValidation)
 	void Server_SetItemData(int ItemID);
 
@@ -46,9 +47,8 @@ protected:
 	UFUNCTION()
 	virtual void OnBeginOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor,
 		UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult);
-	void UseItem(APFPlayer* Character);
 	UFUNCTION(Server, Reliable)
-	void Server_UseItem(APFPlayer* Character);
+	void Server_UseItem(APFCharacter* Character);
 
 private:
 	// 아이템 데이터 참조

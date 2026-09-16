@@ -7,7 +7,7 @@
 #include "System/Framework/PFGameInstance.h"
 #include "System/Subsystems/PFWorldSubsystem.h"
 #include "System/Framework/PFPlayerController.h"
-#include "Character/PFPlayer.h"
+#include "Character/PFCharacter.h"
 
 #include "CollisionQueryParams.h"
 #include "CollisionShape.h"
@@ -151,7 +151,7 @@ bool APFGameMode::TryFindInitialPlayerSpawnTransform(APlayerController* NewPlaye
 	}
 
 	UClass* PlayerPawnClass = GetDefaultPawnClassForController(NewPlayer);
-	const APFPlayer* PlayerDefaultObject = PlayerPawnClass ? Cast<APFPlayer>(PlayerPawnClass->GetDefaultObject()) : nullptr;
+	const APFCharacter* PlayerDefaultObject = PlayerPawnClass ? Cast<APFCharacter>(PlayerPawnClass->GetDefaultObject()) : nullptr;
 	const UCapsuleComponent* PlayerCapsule = PlayerDefaultObject ? PlayerDefaultObject->GetCapsuleComponent() : nullptr;
 	if (!PlayerCapsule)
 	{
@@ -259,7 +259,7 @@ void APFGameMode::RespawnPlayer(TWeakObjectPtr<APlayerController> PlayerControll
 	{
 		return;
 	}
-	APFPlayer* DeadPlayer = Cast<APFPlayer>(Controller->GetPawn());
+	APFCharacter* DeadPlayer = Cast<APFCharacter>(Controller->GetPawn());
 	APFPlayerState* PlayerState = Controller->GetPlayerState<APFPlayerState>();
 	UAbilitySystemComponent* PlayerASC = PlayerState ? PlayerState->GetAbilitySystemComponent() : nullptr;
 	UPFAttributeSet* PlayerAttributes = PlayerState ? PlayerState->GetAttributeSet() : nullptr;
@@ -320,8 +320,11 @@ void APFGameMode::ChangeCharacter(AController* Controller)
 	// 이전 위치, 제어 상태 보관
 	FTransform RestartTransform;
 	bool bHasRestartTransform = false;
-	FPFCharacterSharedStateSnapshot SharedStateSnapshot;
-	bool bHasSharedStateSnapshot = false;
+	APFPlayerController* PFController = Cast<APFPlayerController>(Controller);
+	if (PFController)
+	{
+		PFController->CaptureCharacterState();
+	}
 	const FRotator SavedControlRotation = Controller->GetControlRotation();
 
 	if (APawn* OldPawn = Controller->GetPawn())
@@ -329,11 +332,6 @@ void APFGameMode::ChangeCharacter(AController* Controller)
 		RestartTransform = OldPawn->GetActorTransform();
 		bHasRestartTransform = true;
 
-		if (APFPlayer* OldCharacter = Cast<APFPlayer>(OldPawn))
-		{
-			SharedStateSnapshot = OldCharacter->CreateSharedStateSnapshot();
-			bHasSharedStateSnapshot = true;
-		}
 	}
 
 	// 다음 캐릭터 선택
@@ -366,12 +364,9 @@ void APFGameMode::ChangeCharacter(AController* Controller)
 		RestartPlayer(Controller);
 	}
 
-	if (bHasSharedStateSnapshot)
+	if (PFController)
 	{
-		if (APFPlayer* NewCharacter = Cast<APFPlayer>(Controller->GetPawn()))
-		{
-			NewCharacter->RestoreSharedStateSnapshot(SharedStateSnapshot);
-		}
+		PFController->RestoreCharacterState();
 	}
 
 	// 서버, 클라이언트 시선 복원

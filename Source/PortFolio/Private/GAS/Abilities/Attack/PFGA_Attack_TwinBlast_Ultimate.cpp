@@ -25,7 +25,7 @@ UPFGA_Attack_TwinBlast_Ultimate::UPFGA_Attack_TwinBlast_Ultimate()
 bool UPFGA_Attack_TwinBlast_Ultimate::CanActivateTwinBlastAttack(const FGameplayAbilityActorInfo* ActorInfo) const
 {
 	const APFTwinBlast* TwinBlast = ActorInfo ? Cast<APFTwinBlast>(ActorInfo->AvatarActor.Get()) : nullptr;
-	if (!TwinBlast)
+	if (!TwinBlast || !TwinBlast->IsPlayerCharacter())
 	{
 		return false;
 	}
@@ -46,7 +46,13 @@ void UPFGA_Attack_TwinBlast_Ultimate::WaitForEvent(AActor* AvatarActor)
 
 	// 첫 발사 후 연사 예약
 	LastShootTime = World->GetTimeSeconds();
-	StartShoot(TwinBlast, nullptr, TwinBlast->GetAimPoint());
+	FVector AimPoint;
+	if (!TwinBlast->TryGetAttackAim(AimPoint))
+	{
+		FinishAbility(true);
+		return;
+	}
+	StartShoot(TwinBlast, AimPoint);
 	if (IsActive())
 	{
 		World->GetTimerManager().SetTimer(
@@ -103,5 +109,11 @@ void UPFGA_Attack_TwinBlast_Ultimate::FireNextShot()
 	}
 
 	LastShootTime = World->GetTimeSeconds();
-	StartShoot(TwinBlast, nullptr, TwinBlast->GetAimPoint());
+	FVector AimPoint;
+	if (!TwinBlast->TryGetAttackAim(AimPoint))
+	{
+		FinishAbility(true);
+		return;
+	}
+	StartShoot(TwinBlast, AimPoint);
 }

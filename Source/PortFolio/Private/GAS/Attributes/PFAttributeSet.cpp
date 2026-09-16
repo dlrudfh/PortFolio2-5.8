@@ -1,6 +1,6 @@
 #include "GAS/Attributes/PFAttributeSet.h"
 
-#include "Character/PFPlayer.h"
+#include "Character/PFCharacter.h"
 #include "GameplayEffectExtension.h"
 #include "GAS/Effects/PFGE_StatGameplayEffects.h"
 #include "Net/UnrealNetwork.h"
@@ -68,7 +68,9 @@ void UPFAttributeSet::PostGameplayEffectExecute(const FGameplayEffectModCallback
 				UAbilitySystemComponent* KillerASC = Data.EffectSpec.GetContext().GetOriginalInstigatorAbilitySystemComponent();
 				UAbilitySystemComponent* VictimASC = GetOwningAbilitySystemComponent();
 				const float KillExperienceReward = static_cast<float>(FMath::Max(1, FMath::FloorToInt(GetLevel()))) * 100.f;
-				const bool bPlayerKill = KillerASC && KillerASC != VictimASC && Cast<APFPlayer>(KillerASC->GetAvatarActor());
+				const APFCharacter* Killer = KillerASC ? Cast<APFCharacter>(KillerASC->GetAvatarActor()) : nullptr;
+				const bool bPlayerKill = KillerASC && KillerASC != VictimASC
+					&& Killer && Killer->IsPlayerCharacter();
 				if (bPlayerKill)
 				{
 					FPFGE_StatGameplayEffects::ApplyExperience(KillerASC, KillExperienceReward);

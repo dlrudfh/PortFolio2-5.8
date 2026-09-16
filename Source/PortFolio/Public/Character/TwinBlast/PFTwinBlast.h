@@ -1,15 +1,15 @@
 
 #pragma once
 
-#include "Character/PFPlayer.h"
+#include "Character/PFCharacter.h"
 #include "PFTwinBlast.generated.h"
 
 class UPFGA_Attack_TwinBlast;
 class UPFGA_Ultimate_TwinBlast;
 
-// 트윈블라스트 플레이어 클래스
+// 트윈블라스트 캐릭터 클래스
 UCLASS(meta=(PrioritizeCategories="UltGun PFCharacter Camera UI Chest GAS"))
-class PORTFOLIO_API APFTwinBlast : public APFPlayer
+class PORTFOLIO_API APFTwinBlast : public APFCharacter
 {
 	GENERATED_BODY()
 
@@ -49,14 +49,14 @@ private:
 	virtual void InitAbilityActorInfo() override;
 	void GiveUltimateAttackAbility();
 
-	virtual void SetDir() override;
+	virtual void OnRep_FinalDir() override;
+	void EnsureUltimatePresentation();
 	virtual void SetMesh() override;
 	virtual void SetParticle() override;
 	virtual void SetSound() override;
 	virtual void Jump() override;
 	virtual bool CanSprint() const override;
 
-	virtual void Attack() override;
 	virtual TSubclassOf<UGameplayAbility> GetAttackAbilityClass() const override;
 	void ToggleUltimateState();
 	virtual void UltimateTagChanged(FGameplayTag StateTag, int32 NewCount) override;
@@ -73,7 +73,7 @@ private:
 
 	void StartUltShoulderEffect();
 	void StopUltShoulderEffect();
-	virtual void OnMontageEnd(UAnimMontage* Montage, bool bInterrupted);
+	virtual void OnMontageEnd(UAnimMontage* Montage, bool bInterrupted) override;
 	virtual void PostHitProcessing() override;
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;

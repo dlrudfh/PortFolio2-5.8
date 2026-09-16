@@ -1,5 +1,6 @@
 #include "Props/PFChest.h"
-#include "Character/PFPlayer.h"
+#include "Character/PFCharacter.h"
+#include "System/Framework/PFPlayerController.h"
 #include "System/Subsystems/PFGameInstanceSubsystem.h"
 
 using enum APFItem::EITEM;
@@ -110,17 +111,23 @@ void APFChest::HandleChestDestroy()
 // 플레이어 상호작용 대상으로 등록
 void APFChest::OnCharacterBeginOverlap(UPrimitiveComponent* OverlappedCom, AActor* OtherActor, UPrimitiveComponent* OtherCom, int32 OteryBodyIndex, bool bFromSweep, const FHitResult& SweepResult)
 {
-	APFPlayer* Character = Cast<APFPlayer>(OtherActor);
-	if (!Character) return;
-	Character->SetChest(this);
+	APFCharacter* Character = Cast<APFCharacter>(OtherActor);
+	APFPlayerController* PlayerController = Character ? Cast<APFPlayerController>(Character->GetController()) : nullptr;
+	if (Character && Character->IsPlayerCharacter() && PlayerController)
+	{
+		PlayerController->SetChest(this);
+	}
 }
 
 // 플레이어 상호작용 대상 해제
 void APFChest::OnCharacterEndOverlap(UPrimitiveComponent* OverlappedCom, AActor* OtherActor, UPrimitiveComponent* OtherCom, int32 OteryBodyIndex)
 {
-	APFPlayer* Character = Cast<APFPlayer>(OtherActor);
-	if (!Character) return;
-	Character->SetChest();
+	APFCharacter* Character = Cast<APFCharacter>(OtherActor);
+	APFPlayerController* PlayerController = Character ? Cast<APFPlayerController>(Character->GetController()) : nullptr;
+	if (Character && Character->IsPlayerCharacter() && PlayerController)
+	{
+		PlayerController->SetChest();
+	}
 }
 
 void APFChest::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const

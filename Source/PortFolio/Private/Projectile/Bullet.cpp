@@ -1,7 +1,6 @@
 #include "Projectile/Bullet.h"
 
 #include "System/Subsystems/PFGameInstanceSubsystem.h"
-#include "Character/PFEnemy.h"
 
 ABullet::ABullet()
 {
@@ -112,7 +111,7 @@ void ABullet::OnBeginOverlap(UPrimitiveComponent* OverlappedComponent, AActor* O
 	// 캐릭터 피해, 피격 연출 처리
 	if (APFCharacter* HitCharacter = Cast<APFCharacter>(OtherActor))
 	{
-		if (IsValid(Parent) && Cast<APFEnemy>(Parent) != nullptr && Cast<APFEnemy>(HitCharacter) != nullptr)
+		if (IsValid(Parent) && Parent->IsEnemyCharacter() && HitCharacter->IsEnemyCharacter())
 		{
 			return;
 		}

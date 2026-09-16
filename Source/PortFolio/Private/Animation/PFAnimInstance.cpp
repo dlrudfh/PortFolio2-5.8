@@ -192,17 +192,4 @@ void UPFAnimInstance::NativeInitializeAnimation()
 	{
 		OnMontageStarted.AddUniqueDynamic(Character, &APFCharacter::OnLevelStartMontageStarted);
 	}
-
-	UWorld* World = GetWorld();
-	if (!World) return;
-	FString LevelName = World->GetMapName();
-	LevelName = FPackageName::GetShortName(LevelName);
-	PFLOG(Warning, TEXT("Current Level: %s"), *LevelName);
-	// 게임 맵에서 등장 연출 재생
-	if (!LevelName.Contains("Title"))
-	{
-		PlayMontage(etoi(LEVELSTART_GLOBAL));
-		APawn* Pawn = TryGetPawnOwner();
-		
-	}
 }

@@ -3,12 +3,16 @@
 #include "Character/Kwang/PFKwang.h"
 #include "Animation/PFAnimInst_Kwang.h"
 #include "GAS/Abilities/Attack/PFGA_Attack_Kwang.h"
+#include "GAS/PFGameplayTags.h"
 #include "Particles/ParticleSystemComponent.h"
 #include "Engine/World.h"
 
 APFKwang::APFKwang() : SwordTrail(nullptr), bSwordHitDetectionActive(false)
 {
 	AttackAbilityClass = UPFGA_Attack_Kwang::StaticClass();
+	AISettings.DesiredCombatDistance = 150.f;
+	AISettings.DistanceTolerance = 0.f;
+	AISettings.AttackRange = 200.f;
 
 	SetMesh();
 	SetParticle();
@@ -213,6 +217,12 @@ void APFKwang::ProcessSwordHits()
 	{
 		APFCharacter* HitCharacter = Cast<APFCharacter>(HitResult.GetActor());
 		if (!IsValid(HitCharacter) || HitCharacter == this || HitActorsDuringAttack.Contains(HitCharacter))
+		{
+			continue;
+		}
+
+		if (IsEnemyCharacter() && (!HitCharacter->IsPlayerCharacter() || !HitCharacter->IsPlayerControlled()
+			|| HitCharacter->IsDeadCharacter() || HitCharacter->HasStateTag(PFGameplayTags::Character_State_Invulnerable)))
 		{
 			continue;
 		}

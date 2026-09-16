@@ -1,6 +1,6 @@
 #include "Props/PFItem.h"
 
-#include "Character/PFPlayer.h"
+#include "Character/PFCharacter.h"
 #include "System/Framework/PFPlayerState.h"
 #include "System/Subsystems/PFGameInstanceSubsystem.h"
 
@@ -91,16 +91,16 @@ void APFItem::ActivateNiagaraEffect()
 void APFItem::OnBeginOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor,
 	UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult)
 {
-	if (APFPlayer* Character = Cast<APFPlayer>(OtherActor))
+	if (APFCharacter* Character = Cast<APFCharacter>(OtherActor))
 	{
 		UseItem(Character);
 	}
 }
 
 // 인벤토리 추가 후 월드 아이템 제거
-void APFItem::UseItem(APFPlayer* Character)
+void APFItem::UseItem(APFCharacter* Character)
 {
-	if (!HasAuthority() || !Character || StoredItemID == RETURN_ERROR)
+	if (!HasAuthority() || !IsValid(Character) || !Character->IsPlayerCharacter() || !Character->IsPlayerControlled() || StoredItemID == RETURN_ERROR)
 	{
 		return;
 	}
@@ -121,7 +121,7 @@ void APFItem::UseItem(APFPlayer* Character)
 }
 
 // 서버 아이템 획득 처리
-void APFItem::Server_UseItem_Implementation(APFPlayer* Character)
+void APFItem::Server_UseItem_Implementation(APFCharacter* Character)
 {
 	UseItem(Character);
 }

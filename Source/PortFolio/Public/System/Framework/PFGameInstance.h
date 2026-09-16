@@ -6,6 +6,7 @@
 #include "Engine/DataTable.h"
 #include "Engine/GameInstance.h"
 #include "Blueprint/UserWidget.h"
+#include "Containers/Ticker.h"
 #include "OnlineSessionSettings.h"
 #include "Online/OnlineSessionNames.h"
 #include "Interfaces/OnlineSessionInterface.h"
@@ -71,6 +72,8 @@ class PORTFOLIO_API UPFGameInstance : public UGameInstance
 public:
 	UPFGameInstance();
 	virtual void Init() override;
+	virtual void Shutdown() override;
+	virtual void ReturnToMainMenu() override;
 	void CreateTitle();
 
 	FPFCharacterData* GetPFCharacterData(int32 CharacterID);
@@ -105,6 +108,35 @@ public:
 	void SetCharacterType(ECHARACTER SelectedCharacter);
 
 private:
+	enum class ESessionOperation : uint8
+	{
+		Idle,
+		Creating,
+		Finding,
+		Joining,
+		Destroying,
+		Traveling
+	};
+
+	enum class ESessionRequest : uint8
+	{
+		None,
+		Create,
+		Join
+	};
+
+	bool RequestSession(ESessionRequest Request, const FString& SessionName);
+	bool StartPendingSessionRequest();
+	void HandleSessionDisconnect(UWorld* World, class UNetDriver* NetDriver);
+	void BeginSessionCleanup();
+	void OnDestroySessionComplete(FName SessionName, bool bSucceeded);
+	void FinishSessionCleanup(bool bSucceeded);
+	void FailSessionRequest();
+	void ClearSessionDelegates();
+	void UpdateSessionUI();
+	void FinishExitGame();
+	bool HandleExitTimeout(float DeltaTime);
+
 	UPROPERTY()
 	ECHARACTER CharacterType;
 	// 캐릭터, 아이템 데이터 테이블
@@ -121,4 +153,22 @@ private:
 	FString Address;
 
 	FString InputSessionName;
+
+	// 세션 작업 완료 이벤트 핸들
+	FDelegateHandle CreateSessionCompleteHandle;
+	FDelegateHandle FindSessionsCompleteHandle;
+	FDelegateHandle JoinSessionCompleteHandle;
+	FDelegateHandle DestroySessionCompleteHandle;
+	// 연결 종료 이벤트 핸들
+	FDelegateHandle DisconnectHandle;
+	// 게임 종료 대기 핸들
+	FTSTicker::FDelegateHandle ExitTickerHandle;
+	ESessionOperation SessionOperation = ESessionOperation::Idle;
+	ESessionRequest PendingSessionRequest = ESessionRequest::None;
+	bool bCleanupRequested = false;
+	bool bRestoreSessionInput = false;
+	bool bReturningToTitle = false;
+	bool bExitRequested = false;
+	bool bExitDispatched = false;
+	bool bShuttingDown = false;
 };
