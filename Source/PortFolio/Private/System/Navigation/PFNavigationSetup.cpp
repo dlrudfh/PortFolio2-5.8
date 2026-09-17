@@ -10,10 +10,10 @@
 #include "GameFramework/WorldSettings.h"
 #include "NavMesh/NavMeshBoundsVolume.h"
 #include "NavMesh/RecastNavMesh.h"
-#include "Navigation/CrowdManager.h"
 #include "NavigationSystem.h"
 #include "System/Navigation/PFNavLinkProxy.h"
-#include "System/Navigation/PFPhysicsNavObstacleComponent.h"
+#include "System/Navigation/PFNavigationLink.h"
+#include "System/Navigation/PFNavigationLinkBuilder.h"
 #include "UObject/UnrealType.h"
 
 APFNavigationSetup::APFNavigationSetup()
@@ -24,7 +24,7 @@ APFNavigationSetup::APFNavigationSetup()
 	BotClass = APFCharacter::StaticClass();
 }
 
-// 물리 장애물 제외, 봇 탄도에서 자동 링크 생성 설정 산출
+// 기본 NavMesh 빌드, 보행 낙하 우선 이동 링크 생성
 void APFNavigationSetup::PrepareStaticNavigation()
 {
 #if WITH_EDITOR
@@ -35,6 +35,13 @@ void APFNavigationSetup::PrepareStaticNavigation()
 		return;
 	}
 	const UCharacterMovementComponent* Movement = Bot->GetCharacterMovement();
+	UNavigationSystemV1* Navigation = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
+	if (!Navigation || Navigation->GetNumRunningBuildTasks() > 0
+		|| Navigation->IsNavigationBuildingLocked(static_cast<uint8>(~ENavigationBuildLock::NoUpdateInEditor)))
+	{
+		PreparationResult = TEXT("Wait until navigation is unlocked and the current build has finished.");
+		return;
+	}
 	const float Radius = Bot->GetCapsuleComponent()->GetScaledCapsuleRadius();
 	const float HalfHeight = Bot->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
 	const float Gravity = FMath::Abs(World->GetWorldSettings()->GetGravityZ() * Movement->GravityScale);
@@ -52,9 +59,12 @@ void APFNavigationSetup::PrepareStaticNavigation()
 		NavigationBounds += It->GetComponentsBoundingBox(true);
 	}
 	TArray<ARecastNavMesh*> NavMeshes;
-	for (TActorIterator<ARecastNavMesh> It(World); It; ++It)
+	FNavAgentProperties AgentProperties = Movement->GetNavAgentPropertiesRef();
+	AgentProperties.AgentRadius = Radius;
+	AgentProperties.AgentHeight = HalfHeight * 2.f;
+	if (ARecastNavMesh* NavMesh = Cast<ARecastNavMesh>(Navigation->GetNavDataForProps(AgentProperties)))
 	{
-		NavMeshes.Add(*It);
+		NavMeshes.Add(NavMesh);
 	}
 	if (!NavigationBounds.IsValid || NavMeshes.IsEmpty())
 	{
@@ -71,7 +81,6 @@ void APFNavigationSetup::PrepareStaticNavigation()
 
 	Modify();
 	int32 ObstacleCount = 0;
-	float LargestObstacleRadius = Radius;
 	for (TActorIterator<AActor> It(World); It; ++It)
 	{
 		if (Cast<ACharacter>(*It))
@@ -88,69 +97,17 @@ void APFNavigationSetup::PrepareStaticNavigation()
 			It->Modify();
 			Mesh->Modify();
 			Mesh->SetCanEverAffectNavigation(false);
-			TInlineComponentArray<UPFPhysicsNavObstacleComponent*> Obstacles(*It);
-			UPFPhysicsNavObstacleComponent* Obstacle = nullptr;
-			for (UPFPhysicsNavObstacleComponent* Existing : Obstacles)
-			{
-				if (Existing->GetObstacleMesh() == Mesh)
-				{
-					Obstacle = Existing;
-					break;
-				}
-			}
-			if (!Obstacle)
-			{
-				Obstacle = NewObject<UPFPhysicsNavObstacleComponent>(*It, NAME_None, RF_Transactional);
-				It->AddInstanceComponent(Obstacle);
-				Obstacle->SetObstacleMesh(Mesh);
-				Obstacle->RegisterComponent();
-			}
-			// 회전 후에도 메시 전체를 담을 수 있는 반경
-			LargestObstacleRadius = FMath::Max(LargestObstacleRadius, static_cast<float>(Mesh->Bounds.SphereRadius));
 			It->MarkPackageDirty();
 			++ObstacleCount;
 		}
-	}
-
-	const float Apex = FMath::Square(JumpSpeed) / (2.f * Gravity);
-	const float MaxDrop = NavigationBounds.GetSize().Z;
-	const float LengthStride = FMath::Max(20.f, Radius);
-	FVector MaxDropVelocity;
-	float MaxFlightTime;
-	UPFNavLinkProxy::CalculateJump(FVector::ZeroVector, FVector(0, 0, -MaxDrop),
-		WalkSpeed, JumpSpeed, Gravity, MaxDropVelocity, MaxFlightTime);
-	const float MaxLength = WalkSpeed * MaxFlightTime;
-	const int32 LengthBands = FMath::Max(1, FMath::CeilToInt(MaxLength / LengthStride));
-	TArray<FNavLinkGenerationJumpConfig> Configs;
-	Configs.Reserve(LengthBands);
-	for (int32 LengthBand = 1; LengthBand <= LengthBands; ++LengthBand)
-	{
-		FNavLinkGenerationJumpConfig& Config = Configs.AddDefaulted_GetRef();
-		Config.Name = FName(*FString::Printf(TEXT("PF_Jump_%d"), LengthBand));
-		Config.JumpLength = MaxLength * LengthBand / LengthBands;
-		Config.JumpDistanceFromEdge = 0.f;
-		const float MinimumFlightTime = Config.JumpLength / WalkSpeed;
-		const float ReferenceEndHeight = JumpSpeed * MinimumFlightTime
-			- 0.5f * Gravity * FMath::Square(MinimumFlightTime);
-		Config.JumpMaxDepth = FMath::Max(-ReferenceEndHeight, -Apex + 2.f);
-		Config.JumpHeight = Apex;
-		Config.JumpEndsHeightTolerance = FMath::Max(Apex - ReferenceEndHeight,
-			MaxDrop + ReferenceEndHeight) + Movement->MaxStepHeight;
-		Config.SamplingSeparationFactor = 1.f;
-		Config.FilterDistanceThreshold = Radius;
-		Config.LinkBuilderFlags = static_cast<uint16>(ENavLinkBuilderFlags::CreateCenterPointLink);
-		Config.DownDirectionAreaClass = UPFNavArea_Jump::StaticClass();
-		Config.UpDirectionAreaClass = nullptr;
-		Config.LinkProxyClass = UPFNavLinkProxy::StaticClass();
 	}
 
 	for (ARecastNavMesh* NavMesh : NavMeshes)
 	{
 		NavMesh->Modify();
 		RuntimeProperty->GetUnderlyingProperty()->SetIntPropertyValue(
-			RuntimeProperty->ContainerPtrToValuePtr<void>(NavMesh), static_cast<int64>(ERuntimeGenerationType::Static));
+			RuntimeProperty->ContainerPtrToValuePtr<void>(NavMesh), static_cast<int64>(ERuntimeGenerationType::Dynamic));
 		auto& JumpConfigs = *JumpConfigsProperty->ContainerPtrToValuePtr<TArray<FNavLinkGenerationJumpConfig>>(NavMesh);
-		UNavigationSystemV1* Navigation = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
 		for (FNavLinkGenerationJumpConfig& Previous : JumpConfigs)
 		{
 			if (Navigation && Previous.LinkProxy && Previous.bLinkProxyRegistered)
@@ -162,25 +119,60 @@ void APFNavigationSetup::PrepareStaticNavigation()
 		AgentConfig.AgentRadius = Radius;
 		AgentConfig.AgentHeight = HalfHeight * 2.f;
 		NavMesh->SetConfig(AgentConfig);
-		NavMesh->bGenerateNavLinks = true;
+		NavMesh->bGenerateNavLinks = false;
 		NavMesh->bAllowNavLinkAsPathEnd = false;
-		JumpConfigs = Configs;
+		JumpConfigs.Reset();
 		NavMesh->MarkPackageDirty();
 	}
 
-	UCrowdManager* CrowdDefaults = GetMutableDefault<UCrowdManager>();
-	bool bCrowdConfigSaved = false;
-	if (FFloatProperty* RadiusProperty = FindFProperty<FFloatProperty>(UCrowdManager::StaticClass(), TEXT("MaxAgentRadius")))
+	Navigation->Build();
+	PreparationResult.Reset();
+	for (ARecastNavMesh* NavMesh : NavMeshes)
 	{
-		const float RequiredRadius = FMath::Max(RadiusProperty->GetPropertyValue_InContainer(CrowdDefaults), LargestObstacleRadius + 10.f);
-		RadiusProperty->SetPropertyValue_InContainer(CrowdDefaults, RequiredRadius);
-		bCrowdConfigSaved = CrowdDefaults->TryUpdateDefaultConfigFile();
+		FString Result;
+		if (!PFNavigationLinkBuilder::Build(*World, *NavMesh, *Bot, GetLevel(), GetActorGuid(), Result))
+		{
+			PreparationResult = Result;
+			UE_LOG(LogTemp, Warning, TEXT("%s"), *PreparationResult);
+			return;
+		}
+		PreparationResult += Result;
 	}
-	PreparationResult = FString::Printf(TEXT("Ready: %d physics meshes, %d jump profiles. Run Build Paths and save the map."),
-		ObstacleCount, Configs.Num());
-	if (!bCrowdConfigSaved)
+	Navigation->Build();
+	PreparationResult += FString::Printf(TEXT(" Excluded %d physics meshes."), ObstacleCount);
+	MarkPackageDirty();
+	UE_LOG(LogTemp, Display, TEXT("%s"), *PreparationResult);
+#endif
+}
+
+// 현재 월드의 프로젝트 이동 링크 삭제
+void APFNavigationSetup::DeleteAllTraversalLinks()
+{
+#if WITH_EDITOR
+	UWorld* World = GetWorld();
+	if (!World || World->IsGameWorld())
 	{
-		PreparationResult += TEXT(" Warning: Crowd config could not be saved; check DefaultEngine.ini write access.");
+		return;
+	}
+	TArray<APFNavigationLink*> Links;
+	for (TActorIterator<APFNavigationLink> It(World); It; ++It)
+	{
+		Links.Add(*It);
+	}
+	Modify();
+	int32 DeletedCount = 0;
+	for (APFNavigationLink* Link : Links)
+	{
+		Link->Modify();
+		if (World->EditorDestroyActor(Link, true))
+		{
+			++DeletedCount;
+		}
+	}
+	PreparationResult = FString::Printf(TEXT("Deleted %d project traversal links. Run Build Paths and save the map."), DeletedCount);
+	if (DeletedCount < Links.Num())
+	{
+		PreparationResult += FString::Printf(TEXT(" %d links could not be deleted."), Links.Num() - DeletedCount);
 	}
 	MarkPackageDirty();
 	UE_LOG(LogTemp, Display, TEXT("%s"), *PreparationResult);

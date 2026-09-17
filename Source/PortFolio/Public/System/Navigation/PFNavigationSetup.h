@@ -6,7 +6,7 @@
 
 class APFCharacter;
 
-// Static NavMesh 설정 준비
+// NavMesh, 프로젝트 이동 링크 생성
 UCLASS()
 class PORTFOLIO_API APFNavigationSetup : public AActor
 {
@@ -15,8 +15,11 @@ class PORTFOLIO_API APFNavigationSetup : public AActor
 public:
 	APFNavigationSetup();
 
-	UFUNCTION(CallInEditor, Category = Navigation, meta = (DisplayName = "Prepare Static Navigation"))
+	UFUNCTION(CallInEditor, Category = Navigation, meta = (DisplayName = "Build Navigation and Traversal Links", DisplayPriority = "1"))
 	void PrepareStaticNavigation();
+
+	UFUNCTION(CallInEditor, Category = Navigation, meta = (DisplayName = "Delete All Traversal Links", DisplayPriority = "2"))
+	void DeleteAllTraversalLinks();
 
 protected:
 	// 점프 생성에 사용할 봇 기본 설정

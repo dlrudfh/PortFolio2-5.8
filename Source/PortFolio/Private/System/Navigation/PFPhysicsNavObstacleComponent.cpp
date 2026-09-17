@@ -6,8 +6,7 @@
 
 UPFPhysicsNavObstacleComponent::UPFPhysicsNavObstacleComponent()
 {
-	PrimaryComponentTick.bCanEverTick = true;
-	PrimaryComponentTick.TickInterval = 0.25f;
+	PrimaryComponentTick.bCanEverTick = false;
 }
 
 // 회피 위치, 크기의 기준 메시 지정
@@ -25,12 +24,11 @@ UPrimitiveComponent* UPFPhysicsNavObstacleComponent::GetObstacleMesh() const
 void UPFPhysicsNavObstacleComponent::BeginPlay()
 {
 	Super::BeginPlay();
-	SetComponentTickEnabled(GetOwner()->HasAuthority());
+	SetComponentTickEnabled(false);
 	if (ObstacleMesh)
 	{
 		ObstacleMesh->SetCanEverAffectNavigation(false);
 	}
-	RegisterCrowdObstacle();
 }
 
 void UPFPhysicsNavObstacleComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)

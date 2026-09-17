@@ -11,6 +11,8 @@
 #include "NavMesh/RecastNavMesh.h"
 #include "System/Navigation/PFCrowdFollowingComponent.h"
 #include "System/Navigation/PFNavLinkProxy.h"
+#include "System/Navigation/PFNavigationLink.h"
+#include "System/Navigation/PFNavigationTraversal.h"
 #include "Templates/UnrealTemplate.h"
 
 APFEnemyAIController::APFEnemyAIController(const FObjectInitializer& ObjectInitializer)
@@ -42,7 +44,7 @@ void APFEnemyAIController::OnPossess(APawn* InPawn)
 	bSavedRVOAvoidance = ControlledPawn->GetCharacterMovement()->bUseRVOAvoidance;
 	bSavedPhysicsInteraction = ControlledPawn->GetCharacterMovement()->bEnablePhysicsInteraction;
 	ControlledPawn->GetCharacterMovement()->SetAvoidanceEnabled(false);
-	ControlledPawn->GetCharacterMovement()->bEnablePhysicsInteraction = false;
+	ControlledPawn->GetCharacterMovement()->bEnablePhysicsInteraction = true;
 	if (UCrowdFollowingComponent* Crowd = Cast<UCrowdFollowingComponent>(GetPathFollowingComponent()))
 	{
 		Crowd->SetCrowdObstacleAvoidance(true);
@@ -67,6 +69,7 @@ void APFEnemyAIController::OnPossess(APawn* InPawn)
 void APFEnemyAIController::OnUnPossess()
 {
 	ClearMovementPath();
+	bOutOfNavigation = false;
 	ClearEnemyIntent();
 	UnbindNavigationTags();
 	if (APFCharacter* ControlledPawn = ControlledCharacter.Get())
@@ -156,7 +159,7 @@ void APFEnemyAIController::Tick(float DeltaTime)
 	if (!IsPlayerTargetValid(Target))
 	{
 		ClearEnemyIntent();
-		if (bExecutingPathJump)
+		if (bExecutingPathJump || bOutOfNavigation)
 		{
 			UpdateEnemyMovement(nullptr, 0.f, DeltaTime);
 		}
@@ -167,7 +170,7 @@ void APFEnemyAIController::Tick(float DeltaTime)
 	const float SurfaceDistance = GetTargetSurfaceDistance(Target);
 	UpdateEnemyMovement(Target, SurfaceDistance, DeltaTime);
 
-	const bool bShouldAttack = ShouldAttackTarget(Target, SurfaceDistance);
+	const bool bShouldAttack = !bOutOfNavigation && ShouldAttackTarget(Target, SurfaceDistance);
 	ControlledCharacter->SetAIAttackCommand(bShouldAttack, false);
 	if (bShouldAttack && !bExecutingPathJump)
 	{
@@ -288,7 +291,7 @@ void APFEnemyAIController::UpdateEnemyMovement(APFCharacter* Target, float Surfa
 		}
 		else if (bApproachingJumpStart)
 		{
-			if (!Movement->IsMovingOnGround() || IsPathJumpBlocked() || ControlledCharacter->IsMovementBlocked())
+			if (!Movement->IsMovingOnGround() || (!bWalkingDrop && IsPathJumpBlocked()) || ControlledCharacter->IsMovementBlocked())
 			{
 				FailNavigationJump();
 			}
@@ -311,6 +314,10 @@ void APFEnemyAIController::UpdateEnemyMovement(APFCharacter* Target, float Surfa
 		}
 		else
 		{
+			if (bWalkingDrop)
+			{
+				UpdateNavigationDrop(DeltaTime);
+			}
 			SetEnemyDirection(FWD);
 			return;
 		}
@@ -336,10 +343,19 @@ void APFEnemyAIController::UpdateEnemyMovement(APFCharacter* Target, float Surfa
 	}
 	if (Movement->IsFalling())
 	{
+		if (bOutOfNavigation && ActiveMoveRequest.IsValid())
+		{
+			ClearMovementPath();
+		}
 		NoProgressTime = 0.f;
 		return;
 	}
-	if (!Target || bOutOfNavigation)
+	if (bOutOfNavigation)
+	{
+		UpdateNavigationRecovery(DeltaTime);
+		return;
+	}
+	if (!Target)
 	{
 		SetEnemyDirection(IDLE);
 		return;
@@ -368,6 +384,10 @@ void APFEnemyAIController::UpdateEnemyMovement(APFCharacter* Target, float Surfa
 			&& (bNavigationRefreshRequested || (!ActiveMoveRequest.IsValid() && Now >= NextRetryTime)))
 		{
 			RefreshMovementPath(Target);
+		}
+		if (bOutOfNavigation)
+		{
+			return;
 		}
 		WatchMovementProgress(DeltaTime);
 		const FVector Velocity = ControlledCharacter->GetVelocity();
@@ -428,7 +448,11 @@ bool APFEnemyAIController::RefreshMovementPath(const APFCharacter* Target)
 		bOutOfNavigation = true;
 		NoProgressTime = 0.f;
 		Movement->StopMovementImmediately();
-		PFLOG(Error, TEXT("Enemy is out of Navimesh"));
+		NextPathRequestTime = 0.f;
+		if (!TryStartNavigationRecovery())
+		{
+			PFLOG(Warning, TEXT("Enemy is out of Navimesh; waiting to retry recovery: %s"), *GetNameSafe(ControlledCharacter.Get()));
+		}
 		return false;
 	}
 
@@ -487,6 +511,102 @@ bool APFEnemyAIController::RefreshMovementPath(const APFCharacter* Target)
 	return false;
 }
 
+// 가까운 NavMesh 지점으로 직선 복귀 요청
+bool APFEnemyAIController::TryStartNavigationRecovery()
+{
+	NextRetryTime = GetWorld()->GetTimeSeconds() + 1.f;
+	APFCharacter* ControlledPawn = ControlledCharacter.Get();
+	if (!ControlledPawn || ControlledPawn->IsDeadCharacter() || ControlledPawn->IsMovementBlocked() || bExecutingPathJump)
+	{
+		return false;
+	}
+	UCharacterMovementComponent* Movement = ControlledPawn->GetCharacterMovement();
+	UNavigationSystemV1* Navigation = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
+	if (!Navigation || !Movement->IsMovingOnGround())
+	{
+		return false;
+	}
+	const FVector Feet = Movement->GetActorFeetLocation();
+	const ANavigationData* NavData = Navigation->GetNavDataForProps(Movement->GetNavAgentPropertiesRef(), Feet);
+	if (!NavData)
+	{
+		return false;
+	}
+	const float HeightRange = Movement->MaxStepHeight + 6.f;
+	for (const float SearchRadius : {50.f, 150.f, 300.f})
+	{
+		FNavLocation Destination;
+		if (!Navigation->ProjectPointToNavigation(Feet, Destination, FVector(SearchRadius, SearchRadius, HeightRange), NavData)
+			|| FVector::Dist2D(Feet, Destination.Location) > SearchRadius
+			|| FMath::Abs(Destination.Location.Z - Feet.Z) > HeightRange)
+		{
+			continue;
+		}
+		FAIMoveRequest Request(Destination.Location);
+		Request.SetUsePathfinding(false);
+		Request.SetProjectGoalLocation(false);
+		Request.SetAllowPartialPath(false);
+		Request.SetRequireNavigableEndLocation(false);
+		Request.SetAcceptanceRadius(5.f);
+		Request.SetReachTestIncludesAgentRadius(false);
+		Request.SetReachTestIncludesGoalRadius(false);
+		GetPathFollowingComponent()->SetPreciseReachThreshold(0.f,
+			Movement->MaxStepHeight / FMath::Max(1.f, ControlledPawn->GetCapsuleComponent()->GetScaledCapsuleHalfHeight()));
+		ActiveMoveRequest = FAIRequestID::InvalidRequest;
+		bWaitingAtPathEnd = false;
+		const FPathFollowingRequestResult Result = MoveTo(Request);
+		if (Result.Code == EPathFollowingRequestResult::RequestSuccessful)
+		{
+			ActiveMoveRequest = Result.MoveId;
+			ProgressOrigin = ControlledPawn->GetActorLocation();
+			NoProgressTime = 0.f;
+			return true;
+		}
+		return Result.Code == EPathFollowingRequestResult::AlreadyAtGoal;
+	}
+	return false;
+}
+
+// 복귀 위치 확인, 정체 재시도, 정상 추적 재개
+void APFEnemyAIController::UpdateNavigationRecovery(float DeltaTime)
+{
+	UCharacterMovementComponent* Movement = ControlledCharacter->GetCharacterMovement();
+	const float Now = GetWorld()->GetTimeSeconds();
+	if (Now >= NextPathRequestTime)
+	{
+		NextPathRequestTime = Now + PathTargetCheckInterval;
+		UNavigationSystemV1* Navigation = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
+		const FVector Feet = Movement->GetActorFeetLocation();
+		const ANavigationData* NavData = Navigation ? Navigation->GetNavDataForProps(Movement->GetNavAgentPropertiesRef(), Feet) : nullptr;
+		const float HeightRange = Movement->MaxStepHeight + 6.f;
+		FNavLocation NavStart;
+		if (NavData && Navigation->ProjectPointToNavigation(Feet, NavStart, FVector(5.f, 5.f, HeightRange), NavData)
+			&& FVector::Dist2D(Feet, NavStart.Location) <= 5.f && FMath::Abs(Feet.Z - NavStart.Location.Z) <= HeightRange)
+		{
+			ClearMovementPath();
+			bOutOfNavigation = false;
+			bRetreating = false;
+			bNavigationRefreshRequested = true;
+			NextPathRequestTime = 0.f;
+			NoProgressTime = 0.f;
+			ProgressOrigin = ControlledCharacter->GetActorLocation();
+			SetEnemyDirection(IDLE);
+			return;
+		}
+	}
+	if (!ActiveMoveRequest.IsValid() && Now >= NextRetryTime)
+	{
+		TryStartNavigationRecovery();
+	}
+	if (ActiveMoveRequest.IsValid())
+	{
+		WatchMovementProgress(DeltaTime);
+	}
+	const FVector Velocity = ControlledCharacter->GetVelocity();
+	RotateEnemyTowards(Velocity, DeltaTime);
+	SetEnemyDirection(Velocity.Size2D() > 5.f ? FWD : IDLE);
+}
+
 void APFEnemyAIController::FindPathForMoveRequest(const FAIMoveRequest& MoveRequest, FPathFindingQuery& Query, FNavPathSharedPtr& OutPath) const
 {
 	if (MoveRequest.IsUsingPathfinding() && PathRequestStart.IsSet())
@@ -506,8 +626,12 @@ void APFEnemyAIController::OnMoveCompleted(FAIRequestID RequestID, const FPathFo
 	if (RequestID == ActiveMoveRequest)
 	{
 		ActiveMoveRequest = FAIRequestID::InvalidRequest;
-		bWaitingAtPathEnd = Result.IsSuccess();
+		bWaitingAtPathEnd = Result.IsSuccess() && !bOutOfNavigation;
 		NextRetryTime = GetWorld()->GetTimeSeconds() + 1.f;
+		if (bOutOfNavigation)
+		{
+			NextPathRequestTime = 0.f;
+		}
 		if (Result.IsSuccess())
 		{
 			NoProgressTime = 0.f;
@@ -559,7 +683,7 @@ void APFEnemyAIController::RequestNavigationRefresh()
 void APFEnemyAIController::WatchMovementProgress(float DeltaTime)
 {
 	const FVector Location = ControlledCharacter->GetActorLocation();
-	if (bWaitingAtPathEnd || bOutOfNavigation)
+	if (bWaitingAtPathEnd)
 	{
 		ProgressOrigin = Location;
 		NoProgressTime = 0.f;
@@ -576,12 +700,20 @@ void APFEnemyAIController::WatchMovementProgress(float DeltaTime)
 	{
 		NoProgressTime = 0.f;
 		ProgressOrigin = Location;
-		RequestNavigationRefresh();
+		if (bOutOfNavigation)
+		{
+			ClearMovementPath();
+			NextRetryTime = GetWorld()->GetTimeSeconds() + 1.f;
+		}
+		else
+		{
+			RequestNavigationRefresh();
+		}
 	}
 }
 
 // 출발 링크의 폴리곤 식별
-NavNodeRef APFEnemyAIController::FindJumpLinkRef(const FVector& Destination) const
+NavNodeRef APFEnemyAIController::FindJumpLinkRef(FNavLinkId LinkId) const
 {
 	const FNavPathSharedPtr Path = GetPathFollowingComponent()->GetPath();
 	const FNavMeshPath* MeshPath = Path.IsValid() ? Path->CastPath<FNavMeshPath>() : nullptr;
@@ -590,31 +722,18 @@ NavNodeRef APFEnemyAIController::FindJumpLinkRef(const FVector& Destination) con
 	{
 		return INVALID_NAVNODEREF;
 	}
-	NavNodeRef BestRef = INVALID_NAVNODEREF;
-	float BestDistance = TNumericLimits<float>::Max();
-	const FVector Feet = ControlledCharacter->GetCharacterMovement()->GetActorFeetLocation();
 	for (NavNodeRef Ref : MeshPath->PathCorridor)
 	{
-		FVector Start;
-		FVector End;
-		if (!NavMesh->GetLinkEndPoints(Ref, Start, End))
+		if (NavMesh->GetNavLinkUserId(Ref) == LinkId)
 		{
-			continue;
-		}
-		const float Distance = FMath::Min(
-			FVector::DistSquared(End, Destination) + FVector::DistSquared(Start, Feet),
-			FVector::DistSquared(Start, Destination) + FVector::DistSquared(End, Feet));
-		if (Distance < BestDistance)
-		{
-			BestDistance = Distance;
-			BestRef = Ref;
+			return Ref;
 		}
 	}
-	return BestRef;
+	return INVALID_NAVNODEREF;
 }
 
-// 자동 링크 출발점 접근
-void APFEnemyAIController::BeginNavigationJump(UPFNavLinkProxy* Link, const FVector& Destination)
+// 이동 링크 출발점 접근
+void APFEnemyAIController::BeginNavigationJump(UObject* Link, const FVector& Destination)
 {
 	if (!ControlledCharacter.IsValid() || !HasAuthority())
 	{
@@ -622,17 +741,22 @@ void APFEnemyAIController::BeginNavigationJump(UPFNavLinkProxy* Link, const FVec
 		GetPathFollowingComponent()->PauseMove();
 		return;
 	}
-	ActiveJumpRef = FindJumpLinkRef(Destination);
+	const INavLinkCustomInterface* CustomLink = Cast<INavLinkCustomInterface>(Link);
+	ActiveJumpId = CustomLink ? CustomLink->GetId() : FNavLinkId::Invalid;
+	const NavNodeRef LinkRef = ActiveJumpId.IsValid() ? FindJumpLinkRef(ActiveJumpId) : INVALID_NAVNODEREF;
+	const UPFNavigationLinkComponent* Component = Cast<UPFNavigationLinkComponent>(Link);
+	const APFNavigationLink* ProjectLink = Component ? Cast<APFNavigationLink>(Component->GetOwner()) : nullptr;
+	bWalkingDrop = ProjectLink && ProjectLink->GetTraversal() == EPFNavigationTraversal::Drop;
 	const FNavPathSharedPtr Path = GetPathFollowingComponent()->GetPath();
 	const ARecastNavMesh* NavMesh = Path.IsValid() ? Cast<ARecastNavMesh>(Path->GetNavigationDataUsed()) : nullptr;
 	FVector LinkEnd;
-	if (!Link || IsPathJumpBlocked() || ControlledCharacter->IsMovementBlocked()
-		|| ActiveJumpRef == INVALID_NAVNODEREF
-		|| !NavMesh || !NavMesh->GetLinkEndPoints(ActiveJumpRef, JumpTakeoffFeet, LinkEnd))
+	if (!CustomLink || (!bWalkingDrop && IsPathJumpBlocked()) || ControlledCharacter->IsMovementBlocked()
+		|| LinkRef == INVALID_NAVNODEREF
+		|| !NavMesh || !NavMesh->GetLinkEndPoints(LinkRef, JumpTakeoffFeet, LinkEnd))
 	{
-		if (ActiveJumpRef != INVALID_NAVNODEREF)
+		if (ActiveJumpId.IsValid())
 		{
-			FailedJumpLinks.Add(ActiveJumpRef, GetWorld()->GetTimeSeconds() + 1.f);
+			FailedJumpLinks.Add(ActiveJumpId, GetWorld()->GetTimeSeconds() + 1.f);
 		}
 		bNavigationAbortPending = true;
 		GetPathFollowingComponent()->PauseMove();
@@ -641,6 +765,11 @@ void APFEnemyAIController::BeginNavigationJump(UPFNavLinkProxy* Link, const FVec
 	if (FVector::DistSquared(JumpTakeoffFeet, Destination) < FVector::DistSquared(LinkEnd, Destination))
 	{
 		Swap(JumpTakeoffFeet, LinkEnd);
+	}
+	if (ProjectLink)
+	{
+		JumpTakeoffFeet = ProjectLink->GetStartFeet();
+		LinkEnd = ProjectLink->GetEndFeet();
 	}
 	UCharacterMovementComponent* Movement = ControlledCharacter->GetCharacterMovement();
 	SavedAirControl = Movement->AirControl;
@@ -655,28 +784,32 @@ void APFEnemyAIController::BeginNavigationJump(UPFNavLinkProxy* Link, const FVec
 		Crowd->SuspendCrowdSteering(true);
 	}
 	ActiveJumpLink = Link;
-	JumpLinkDestination = Destination;
+	JumpLinkDestination = LinkEnd;
 	bExecutingPathJump = true;
 	bApproachingJumpStart = true;
 	JumpTimeRemaining = 1.f;
 }
 
-// 자동 링크 목적지로 점프 발사
+// 이동 궤적 재검사, 낙하 또는 점프 시작
 void APFEnemyAIController::LaunchNavigationJump()
 {
 	UCharacterMovementComponent* Movement = ControlledCharacter->GetCharacterMovement();
-	if (IsPathJumpBlocked() || ControlledCharacter->IsMovementBlocked() || !ControlledCharacter->CanJump())
+	const FPFTraversalSettings Settings = PFNavigationTraversal::GetSettings(*ControlledCharacter.Get(), *GetWorld());
+	FPFTraversalSolution Solution;
+	float DropDuration = 0.f;
+	JumpLandingFeet = JumpLinkDestination;
+	const bool bAllowed = !ControlledCharacter->IsMovementBlocked()
+		&& (bWalkingDrop ? Movement->CanWalkOffLedges() : (!IsPathJumpBlocked() && ControlledCharacter->CanJump()));
+	const bool bValid = bAllowed && (bWalkingDrop
+		? PFNavigationTraversal::ValidateDrop(*GetWorld(), Movement->GetActorFeetLocation(), JumpLandingFeet, Settings, DropDuration)
+		: PFNavigationTraversal::ValidateJump(*GetWorld(), Movement->GetActorFeetLocation(), JumpLandingFeet, Settings, Solution));
+	if (!bValid)
 	{
-		FailedJumpLinks.Add(ActiveJumpRef, GetWorld()->GetTimeSeconds() + 1.f);
+		FailedJumpLinks.Add(ActiveJumpId, GetWorld()->GetTimeSeconds() + 1.f);
 		Movement->StopMovementImmediately();
 		bNavigationAbortPending = true;
 		return;
 	}
-	JumpLandingFeet = JumpLinkDestination;
-	FVector LaunchVelocity;
-	float FlightTime;
-	UPFNavLinkProxy::CalculateJump(Movement->GetActorFeetLocation(), JumpLandingFeet, Movement->MaxWalkSpeed,
-		Movement->JumpZVelocity, FMath::Abs(Movement->GetGravityZ()), LaunchVelocity, FlightTime);
 	bApproachingJumpStart = false;
 	Movement->AirControl = 0.f;
 	Movement->FallingLateralFriction = 0.f;
@@ -684,14 +817,47 @@ void APFEnemyAIController::LaunchNavigationJump()
 	Movement->BrakingFriction = 0.f;
 	Movement->StopActiveMovement();
 	ControlledCharacter->ConsumeMovementInputVector();
-	JumpTimeRemaining = FMath::Max(2.5f, FlightTime + 0.5f);
+	JumpTimeRemaining = FMath::Max(2.5f, (bWalkingDrop ? DropDuration : Solution.Time) + 1.f);
+	if (bWalkingDrop)
+	{
+		return;
+	}
 	// 점프 발사 방향으로 수평 회전
-	const FVector HorizontalLaunchVelocity(LaunchVelocity.X, LaunchVelocity.Y, 0.f);
+	const FVector HorizontalLaunchVelocity(Solution.Velocity.X, Solution.Velocity.Y, 0.f);
 	if (!HorizontalLaunchVelocity.IsNearlyZero())
 	{
 		ControlledCharacter->SetActorRotation(HorizontalLaunchVelocity.Rotation());
 	}
-	ControlledCharacter->LaunchCharacter(LaunchVelocity, true, true);
+	ControlledCharacter->LaunchCharacter(Solution.Velocity, true, true);
+}
+
+// 목표 수평 위치에서 멈추고 자연 낙하 유지
+void APFEnemyAIController::UpdateNavigationDrop(float DeltaTime)
+{
+	if (ControlledCharacter->IsMovementBlocked())
+	{
+		bNavigationAbortPending = true;
+		return;
+	}
+	UCharacterMovementComponent* Movement = ControlledCharacter->GetCharacterMovement();
+	const FVector Feet = Movement->GetActorFeetLocation();
+	const FVector Velocity = PFNavigationTraversal::GetDropVelocity(Feet, JumpLandingFeet, Movement->MaxWalkSpeed, DeltaTime);
+	Movement->StopActiveMovement();
+	Movement->Velocity.X = Velocity.X;
+	Movement->Velocity.Y = Velocity.Y;
+	if (Movement->IsMovingOnGround())
+	{
+		if (FVector::Dist2D(Feet, JumpLandingFeet) <= 3.f && FMath::Abs(Feet.Z - JumpLandingFeet.Z) <= 3.f)
+		{
+			HandleCharacterLanded(ControlledCharacter.Get());
+			return;
+		}
+		Movement->RequestDirectMove(Velocity, false);
+	}
+	if (!Velocity.IsNearlyZero())
+	{
+		RotateEnemyTowards(Velocity, DeltaTime);
+	}
 }
 
 // 점프 중 이동 설정 복원
@@ -703,6 +869,7 @@ void APFEnemyAIController::RestoreJumpMovement()
 	}
 	bExecutingPathJump = false;
 	bApproachingJumpStart = false;
+	bWalkingDrop = false;
 	if (ControlledCharacter.IsValid())
 	{
 		UCharacterMovementComponent* Movement = ControlledCharacter->GetCharacterMovement();
@@ -717,28 +884,28 @@ void APFEnemyAIController::RestoreJumpMovement()
 		Crowd->SuspendCrowdSteering(false);
 	}
 	ActiveJumpLink.Reset();
-	ActiveJumpRef = INVALID_NAVNODEREF;
+	ActiveJumpId = FNavLinkId::Invalid;
 }
 
 // 실패 링크 재시도 제한, 실제 위치에서 복구 예약
 void APFEnemyAIController::FailNavigationJump()
 {
-	if (ActiveJumpRef != INVALID_NAVNODEREF)
+	if (ActiveJumpId.IsValid())
 	{
-		FailedJumpLinks.Add(ActiveJumpRef, GetWorld()->GetTimeSeconds() + 1.f);
+		FailedJumpLinks.Add(ActiveJumpId, GetWorld()->GetTimeSeconds() + 1.f);
 	}
 	RestoreJumpMovement();
 	RequestNavigationRefresh();
 }
 
 // 엔진이 점프 요청을 중단한 경우 복구 예약
-void APFEnemyAIController::HandleNavigationJumpFinished(UPFNavLinkProxy* Link)
+void APFEnemyAIController::HandleNavigationJumpFinished(UObject* Link)
 {
 	if (bExecutingPathJump && ActiveJumpLink.Get() == Link)
 	{
-		if (ActiveJumpRef != INVALID_NAVNODEREF)
+		if (ActiveJumpId.IsValid())
 		{
-			FailedJumpLinks.Add(ActiveJumpRef, GetWorld()->GetTimeSeconds() + 1.f);
+			FailedJumpLinks.Add(ActiveJumpId, GetWorld()->GetTimeSeconds() + 1.f);
 		}
 		RestoreJumpMovement();
 		bNavigationAbortPending = true;
@@ -754,6 +921,13 @@ void APFEnemyAIController::HandleCharacterLanded(APFCharacter* LandedCharacter)
 	}
 	UCharacterMovementComponent* Movement = LandedCharacter->GetCharacterMovement();
 	const FVector Feet = Movement->GetActorFeetLocation();
+	if (bOutOfNavigation)
+	{
+		ClearMovementPath();
+		NextPathRequestTime = 0.f;
+		NextRetryTime = 0.f;
+		return;
+	}
 	bOutOfNavigation = false;
 	NoProgressTime = 0.f;
 	ProgressOrigin = LandedCharacter->GetActorLocation();
@@ -764,7 +938,7 @@ void APFEnemyAIController::HandleCharacterLanded(APFCharacter* LandedCharacter)
 			&& Movement->CurrentFloor.IsWalkableFloor()
 			&& Movement->CurrentFloor.HitResult.GetComponent()
 			&& !Movement->CurrentFloor.HitResult.GetComponent()->IsSimulatingPhysics();
-		UPFNavLinkProxy* Link = ActiveJumpLink.Get();
+		INavLinkCustomInterface* Link = Cast<INavLinkCustomInterface>(ActiveJumpLink.Get());
 		if (bCorrectLanding && Link)
 		{
 			RestoreJumpMovement();
@@ -826,11 +1000,11 @@ void APFEnemyAIController::UnbindNavigationTags()
 }
 
 // 아직 재시도할 수 없는 링크 스냅샷
-void APFEnemyAIController::GetExcludedJumpLinks(TSet<NavNodeRef>& OutLinks) const
+void APFEnemyAIController::GetExcludedJumpLinks(TSet<FNavLinkId>& OutLinks) const
 {
 	OutLinks.Reset();
 	const float Now = GetWorld()->GetTimeSeconds();
-	for (const TPair<NavNodeRef, float>& Pair : FailedJumpLinks)
+	for (const TPair<FNavLinkId, float>& Pair : FailedJumpLinks)
 	{
 		if (Pair.Value > Now)
 		{
@@ -887,7 +1061,7 @@ void APFEnemyAIController::ClearEnemyIntent()
 	}
 
 	ControlledCharacter->SetAIAttackCommand(false, false);
-	if (bExecutingPathJump && !ControlledCharacter->IsDeadCharacter())
+	if ((bExecutingPathJump || bOutOfNavigation) && !ControlledCharacter->IsDeadCharacter())
 	{
 		bNavigationRefreshRequested = true;
 		return;

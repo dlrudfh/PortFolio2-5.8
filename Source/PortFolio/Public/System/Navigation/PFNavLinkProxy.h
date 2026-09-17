@@ -6,7 +6,7 @@
 #include "NavFilters/NavigationQueryFilter.h"
 #include "PFNavLinkProxy.generated.h"
 
-// 자동 생성 점프 영역
+// 점프 이동 영역
 UCLASS()
 class PORTFOLIO_API UPFNavArea_Jump : public UNavArea
 {
@@ -14,6 +14,16 @@ class PORTFOLIO_API UPFNavArea_Jump : public UNavArea
 
 public:
 	UPFNavArea_Jump();
+};
+
+// 위로 도약하지 않는 보행, 낙하 영역
+UCLASS()
+class PORTFOLIO_API UPFNavArea_Drop : public UNavArea
+{
+	GENERATED_BODY()
+
+public:
+	UPFNavArea_Drop();
 };
 
 // 봇별 점프 능력, 실패 링크 필터
@@ -36,9 +46,6 @@ class PORTFOLIO_API UPFNavLinkProxy : public UGeneratedNavLinksProxy
 	GENERATED_BODY()
 
 public:
-	static void CalculateJump(const FVector& Start, const FVector& End, float WalkSpeed, float JumpSpeed,
-		float Gravity, FVector& OutVelocity, float& OutFlightTime);
-
 	virtual UWorld* GetWorld() const override;
 	virtual bool IsLinkPathfindingAllowed(const UObject* Querier) const override;
 	virtual bool OnLinkMoveStarted(UObject* PathComp, const FVector& DestPoint) override;

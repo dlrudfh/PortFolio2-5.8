@@ -24,7 +24,9 @@ namespace
 		float HalfHeight = 0.f;
 		float FloorTolerance = 0.f;
 		bool bJumpBlocked = true;
-		TSet<NavNodeRef> ExcludedLinks;
+		uint8 JumpArea = RECAST_NULL_AREA;
+		uint8 DropArea = RECAST_NULL_AREA;
+		TSet<FNavLinkId> ExcludedLinks;
 		TArray<FPFJumpBlockRegion> BlockRegions;
 
 		virtual INavigationQueryFilterInterface* CreateCopy() const override
@@ -52,20 +54,23 @@ namespace
 				return false;
 			}
 			const int32 ConnectionIndex = static_cast<int32>(Poly - Tile->polys) - Tile->header->offMeshBase;
-			if (bJumpBlocked || ExcludedLinks.Contains(Ref) || ConnectionIndex < 0
+			if (ConnectionIndex < 0
 				|| ConnectionIndex >= Tile->header->offMeshConCount)
 			{
 				return false;
 			}
 
 			const dtOffMeshConnection& Connection = Tile->offMeshCons[ConnectionIndex];
-			// 출발 방향이 확정된 자동 링크만 사용
-			if (!Connection.getIsGenerated() || Connection.getBiDirectional())
+			const bool bDrop = Poly->getArea() == DropArea;
+			// 프로젝트 단방향 링크, 재빌드에도 유지되는 식별자
+			if (Connection.getIsGenerated() || Connection.getBiDirectional()
+				|| (!bDrop && Poly->getArea() != JumpArea)
+				|| !FNavLinkId(Connection.userId).IsValid() || ExcludedLinks.Contains(FNavLinkId(Connection.userId)))
 			{
 				return false;
 			}
 			const FVector Start = Recast2UnrealPoint(Connection.pos + (Connection.getIsReversed() ? 3 : 0));
-			return !IsJumpStartBlocked(Start);
+			return bDrop || (!bJumpBlocked && !IsJumpStartBlocked(Start));
 		}
 
 	private:
@@ -93,6 +98,12 @@ UPFNavArea_Jump::UPFNavArea_Jump()
 	DrawColor = FColor::Orange;
 }
 
+UPFNavArea_Drop::UPFNavArea_Drop()
+{
+	DefaultCost = 1.f;
+	DrawColor = FColor::Cyan;
+}
+
 UPFNavigationQueryFilter::UPFNavigationQueryFilter()
 {
 	bInstantiateForQuerier = true;
@@ -104,6 +115,8 @@ void UPFNavigationQueryFilter::InitializeFilter(const ANavigationData& NavData, 
 	if (Cast<ARecastNavMesh>(&NavData))
 	{
 		FPFRecastQueryFilter Implementation;
+		Implementation.JumpArea = NavData.GetAreaID(UPFNavArea_Jump::StaticClass());
+		Implementation.DropArea = NavData.GetAreaID(UPFNavArea_Drop::StaticClass());
 		if (const auto* Default = static_cast<const FRecastQueryFilter*>(Filter.GetImplementation()))
 		{
 			static_cast<FRecastQueryFilter&>(Implementation) = *Default;
@@ -128,19 +141,6 @@ void UPFNavigationQueryFilter::InitializeFilter(const ANavigationData& NavData, 
 	}
 #endif
 	Super::InitializeFilter(NavData, Querier, Filter);
-}
-
-// 링크 목적지의 점프 발사 속도, 체공 시간 계산
-void UPFNavLinkProxy::CalculateJump(const FVector& Start, const FVector& End, float WalkSpeed, float JumpSpeed,
-	float Gravity, FVector& OutVelocity, float& OutFlightTime)
-{
-	const float SafeGravity = FMath::Max(Gravity, UE_SMALL_NUMBER);
-	const float Discriminant = FMath::Max(0.f,
-		static_cast<float>(FMath::Square(JumpSpeed) - 2.f * SafeGravity * (End.Z - Start.Z)));
-	OutFlightTime = FMath::Max(UE_KINDA_SMALL_NUMBER, (JumpSpeed + FMath::Sqrt(Discriminant)) / SafeGravity);
-	FVector Delta = End - Start;
-	Delta.Z = 0.f;
-	OutVelocity = (Delta / OutFlightTime).GetClampedToMaxSize(FMath::Max(0.f, WalkSpeed)) + FVector(0, 0, JumpSpeed);
 }
 
 UWorld* UPFNavLinkProxy::GetWorld() const

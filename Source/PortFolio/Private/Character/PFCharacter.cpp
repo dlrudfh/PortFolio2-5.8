@@ -29,6 +29,7 @@ APFCharacter::APFCharacter()
 {
 	PrimaryActorTick.bCanEverTick = true;
 
+	GetCapsuleComponent()->InitCapsuleSize(20.f, 88.f);
 	GetMesh()->SetRelativeLocationAndRotation(FVector(0.f, 0.f, -88.f), FRotator(0.f, -90.f, 0.f));
 	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
 	GetCharacterMovement()->AirControl = 0.7f;

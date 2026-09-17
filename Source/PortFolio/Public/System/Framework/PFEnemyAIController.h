@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AIController.h"
+#include "AI/Navigation/NavigationTypes.h"
 #include "Character/PFCharacterControlTypes.h"
 #include "Character/PFCombatAimProvider.h"
 #include "GameplayTagContainer.h"
@@ -8,7 +9,6 @@
 
 class APFCharacter;
 class UAbilitySystemComponent;
-class UPFNavLinkProxy;
 
 // 적 탐색, 경로 이동, 공격 판단
 UCLASS()
@@ -22,9 +22,9 @@ public:
 	virtual bool TryGetCombatAim(FVector& OutAimPoint) override;
 	float GetAimPitch() const;
 	bool IsPathJumpBlocked() const;
-	void GetExcludedJumpLinks(TSet<NavNodeRef>& OutLinks) const;
-	void BeginNavigationJump(UPFNavLinkProxy* Link, const FVector& Destination);
-	void HandleNavigationJumpFinished(UPFNavLinkProxy* Link);
+	void GetExcludedJumpLinks(TSet<FNavLinkId>& OutLinks) const;
+	void BeginNavigationJump(UObject* Link, const FVector& Destination);
+	void HandleNavigationJumpFinished(UObject* Link);
 
 protected:
 	virtual void OnMoveCompleted(FAIRequestID RequestID, const FPathFollowingResult& Result) override;
@@ -47,6 +47,8 @@ protected:
 	void UpdateEnemyMovement(APFCharacter* Target, float SurfaceDistance, float DeltaTime);
 
 	bool RefreshMovementPath(const APFCharacter* Target);
+	bool TryStartNavigationRecovery();
+	void UpdateNavigationRecovery(float DeltaTime);
 
 	void ClearMovementPath();
 	void RequestNavigationRefresh();
@@ -58,7 +60,8 @@ protected:
 	void RestoreJumpMovement();
 	void LaunchNavigationJump();
 	void FailNavigationJump();
-	NavNodeRef FindJumpLinkRef(const FVector& Destination) const;
+	NavNodeRef FindJumpLinkRef(FNavLinkId LinkId) const;
+	void UpdateNavigationDrop(float DeltaTime);
 	bool IsTargetAtMovementHeight(const APFCharacter* Target) const;
 
 	void RotateEnemyTowards(const FVector& WorldDirection, float DeltaTime);
@@ -121,18 +124,19 @@ private:
 	bool bSavedPhysicsInteraction = false;
 
 	// 봇별 실패 링크 재시도 제한
-	TMap<NavNodeRef, float> FailedJumpLinks;
+	TMap<FNavLinkId, float> FailedJumpLinks;
 
-	// 진행 중인 자동 점프
+	// 진행 중인 점프, 보행 낙하
 	UPROPERTY(Transient)
-	TWeakObjectPtr<UPFNavLinkProxy> ActiveJumpLink;
+	TWeakObjectPtr<UObject> ActiveJumpLink;
 
-	NavNodeRef ActiveJumpRef = INVALID_NAVNODEREF;
+	FNavLinkId ActiveJumpId;
 	FVector JumpLandingFeet = FVector::ZeroVector;
 	FVector JumpTakeoffFeet = FVector::ZeroVector;
 	FVector JumpLinkDestination = FVector::ZeroVector;
 	bool bExecutingPathJump = false;
 	bool bApproachingJumpStart = false;
+	bool bWalkingDrop = false;
 	float JumpTimeRemaining = 0.f;
 	float SavedAirControl = 0.f;
 	float SavedFallingFriction = 0.f;
