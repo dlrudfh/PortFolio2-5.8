@@ -54,6 +54,7 @@ public:
 
 	APFPlayerState();
 	virtual void BeginPlay() override;
+	virtual void CopyProperties(APlayerState* NewPlayerState) override;
 
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
 	UPFAttributeSet* GetAttributeSet() const { return AttributeSet; }

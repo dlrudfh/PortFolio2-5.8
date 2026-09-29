@@ -45,6 +45,67 @@ UAbilitySystemComponent* APFPlayerState::GetAbilitySystemComponent() const
 	return AbilitySystemComponent;
 }
 
+void APFPlayerState::CopyProperties(APlayerState* NewPlayerState)
+{
+	Super::CopyProperties(NewPlayerState);
+
+	APFPlayerState* NewState = Cast<APFPlayerState>(NewPlayerState);
+	if (!HasAuthority() || !NewState || NewState == this)
+	{
+		return;
+	}
+
+	// 선택 캐릭터, 소지품, 최초 지급 상태 유지
+	NewState->CharacterType = CharacterType;
+	NewState->InventorySlots = InventorySlots;
+	NewState->QuickSlotItemIDs = QuickSlotItemIDs;
+	NewState->bHasGrantedInitialItems = bHasGrantedInitialItems;
+
+	// 새 ASC에 성장, 전투 수치 복원
+	UAbilitySystemComponent* NewASC = NewState->AbilitySystemComponent;
+	if (bGASStatsInitialized && AttributeSet && NewASC)
+	{
+		NewASC->InitAbilityActorInfo(NewState, nullptr);
+		NewState->bGASStatsInitialized = FPFGE_StatGameplayEffects::InitializeStats(NewASC,
+			AttributeSet->GetLevel(), AttributeSet->GetExperience(),
+			AttributeSet->GetHealth(), AttributeSet->GetMaxHealth(),
+			AttributeSet->GetMana(), AttributeSet->GetMaxMana(),
+			AttributeSet->GetAttackPower(), AttributeSet->GetCoin(), AttributeSet->GetStatPoint());
+		NewASC->SetLooseGameplayTagCount(PFGameplayTags::Character_State_Dead,
+			AttributeSet->GetHealth() <= 0.f ? 1 : 0, EGameplayTagReplicationState::TagOnly);
+	}
+
+	// 아이템 쿨타임, 실드의 남은 시간 유지
+	if (AbilitySystemComponent && NewASC && GetWorld())
+	{
+		const float WorldTime = GetWorld()->GetTimeSeconds();
+		for (const FActiveGameplayEffectHandle Handle : AbilitySystemComponent->GetActiveEffects(FGameplayEffectQuery()))
+		{
+			const FActiveGameplayEffect* Effect = AbilitySystemComponent->GetActiveGameplayEffect(Handle);
+			if (!Effect || !Effect->Spec.Def
+				|| (!Effect->Spec.Def->IsA<UPFGE_ItemCooldown>() && !Effect->Spec.Def->IsA<UPFGE_Shield>()))
+			{
+				continue;
+			}
+			const float RemainingTime = Effect->GetTimeRemaining(WorldTime);
+			if (RemainingTime <= 0.f)
+			{
+				continue;
+			}
+
+			FGameplayEffectSpec RestoredSpec(Effect->Spec.Def, NewASC->MakeEffectContext(), Effect->Spec.GetLevel());
+			RestoredSpec.DynamicGrantedTags = Effect->Spec.DynamicGrantedTags;
+			RestoredSpec.CopySetByCallerMagnitudes(Effect->Spec);
+			RestoredSpec.SetStackCount(Effect->Spec.GetStackCount());
+			RestoredSpec.SetDuration(RemainingTime, true);
+			NewASC->ApplyGameplayEffectSpecToSelf(RestoredSpec);
+		}
+	}
+
+	NewState->OnRep_InventorySlots();
+	NewState->ForceNetUpdate();
+}
+
 // 플레이어 스탯, 마나 재생 초기화
 void APFPlayerState::InitializeGASStats()
 {
@@ -113,6 +174,7 @@ void APFPlayerState::Server_IncreaseStat_Implementation(int32 UpgradeTypeIndex)
 // 스탯 강화 적용
 void APFPlayerState::ApplyStatIncrease(EPFStatUpgradeType UpgradeType)
 {
+	if (const APFCharacter* Character = Cast<APFCharacter>(GetPawn()); Character && Character->IsJumpPadFlightActive()) return;
 	if (!HasAuthority() || !bGASStatsInitialized || !AbilitySystemComponent || !AttributeSet)
 	{
 		return;

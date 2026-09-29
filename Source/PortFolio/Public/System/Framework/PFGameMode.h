@@ -19,7 +19,8 @@ public:
 	APFGameMode();
 	static bool FindSpawnTransform(UWorld* World, const UCapsuleComponent* Capsule,
 		const FCollisionQueryParams& QueryParams, int32& RemainingAttempts,
-		bool bCheckBlockingCollision, FTransform& OutSpawnTransform);
+		bool bCheckBlockingCollision, FTransform& OutSpawnTransform,
+		const FVector* SpawnCenter = nullptr, float SpawnRadius = 0.f);
 
 	virtual void BeginPlay() override;
 
@@ -27,6 +28,7 @@ public:
 	virtual void RestartPlayer(AController* NewPlayer) override;
 
 	void RequestInitialSpawn(APFPlayerController* NewPlayer, ECHARACTER SelectedCharacter);
+	void ChangeTestMap();
 
 	void RespawnPlayer(TWeakObjectPtr<APlayerController> PlayerController);
 
@@ -38,4 +40,12 @@ private:
 	bool UsesInitialSpawnFlow(AController* Controller) const;
 	void TryStartInitialPlayer(APFPlayerController* NewPlayer);
 	bool TryFindInitialPlayerSpawnTransform(APlayerController* NewPlayer, FTransform& OutSpawnTransform);
+
+	// 맵 전환 대상, 패키징 참조
+	UPROPERTY()
+	TSoftObjectPtr<UWorld> TestMap2;
+	UPROPERTY()
+	TSoftObjectPtr<UWorld> TestMap3;
+	UPROPERTY()
+	TArray<TSoftObjectPtr<UWorld>> AdditionalTestMaps;
 };

@@ -12,6 +12,15 @@
 #include "Kismet/GameplayStatics.h"
 #include "Internationalization/Text.h"
 #include "Components/EditableTextBox.h"
+#include "Components/CanvasPanelSlot.h"
+#include "Blueprint/WidgetTree.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/GameViewportClient.h"
+#include "Engine/LocalPlayer.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/StaticMeshActor.h"
+#include "SceneView.h"
+#include "Slate/SceneViewport.h"
 
 void UPFTitle::NativeConstruct()
 {
@@ -42,7 +51,32 @@ void UPFTitle::NativeConstruct()
 	PFCHECK(ChooseCharacter);
 	ChooseCharacter->SetVisibility(ESlateVisibility::Hidden);
 
+	SessionNoticeText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("SessionNotice"));
+	SessionNoticeText->SetJustification(ETextJustify::Center);
+	SessionNoticeText->SetWrapTextAt(720.f);
+	SessionNoticeText->SetColorAndOpacity(FSlateColor(FLinearColor(1.f, 0.7f, 0.3f)));
+	SessionNoticeText->SetVisibility(ESlateVisibility::Collapsed);
+	if (UCanvasPanelSlot* NoticeSlot = TitleUI->AddChildToCanvas(SessionNoticeText))
+	{
+		NoticeSlot->SetAnchors(FAnchors(0.5f, 1.f));
+		NoticeSlot->SetAlignment(FVector2D(0.5f, 1.f));
+		NoticeSlot->SetPosition(FVector2D(0.f, -40.f));
+		NoticeSlot->SetAutoSize(true);
+	}
+
 	SetIsFocusable(true);
+
+	// 화면 크기를 따라갈 배경판 연결
+	CharacterSelectBackdrop.Reset();
+	BackdropViewportSize = FIntPoint::ZeroValue;
+	for (TActorIterator<AStaticMeshActor> It(GetWorld()); It; ++It)
+	{
+		if (It->ActorHasTag(TEXT("CharacterSelectBackdrop")))
+		{
+			CharacterSelectBackdrop = *It;
+			break;
+		}
+	}
 
 	// 캐릭터 선택용 더미 생성
 	FActorSpawnParameters DummySpawnParams;
@@ -97,6 +131,38 @@ void UPFTitle::NativeConstruct()
 			break;
 		}
 	}
+}
+
+void UPFTitle::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
+{
+	Super::NativeTick(MyGeometry, InDeltaTime);
+
+	AStaticMeshActor* Backdrop = CharacterSelectBackdrop.Get();
+	ULocalPlayer* LocalPlayer = GetOwningLocalPlayer();
+	if (!Backdrop || !LocalPlayer || !LocalPlayer->ViewportClient) return;
+
+	FViewport* Viewport = LocalPlayer->ViewportClient->Viewport;
+	if (!Viewport) return;
+
+	const FIntPoint ViewportSize = Viewport->GetSizeXY();
+	if (ViewportSize.X <= 0 || ViewportSize.Y <= 0 || ViewportSize == BackdropViewportSize) return;
+
+	UStaticMeshComponent* MeshComponent = Backdrop->GetStaticMeshComponent();
+	UStaticMesh* Mesh = MeshComponent ? MeshComponent->GetStaticMesh() : nullptr;
+	FSceneViewProjectionData ProjectionData;
+	if (!Mesh || !LocalPlayer->GetProjectionData(Viewport, ProjectionData) || ProjectionData.IsPerspectiveProjection()) return;
+
+	// 실제 직교 투영 범위에 배경의 가로, 세로를 각각 맞춤
+	const FVector MeshSize = Mesh->GetBoundingBox().GetSize();
+	const double ProjectedWidth = FMath::Abs(ProjectionData.ProjectionMatrix.M[0][0]) * MeshSize.X;
+	const double ProjectedHeight = FMath::Abs(ProjectionData.ProjectionMatrix.M[1][1]) * MeshSize.Y;
+	if (ProjectedWidth <= UE_SMALL_NUMBER || ProjectedHeight <= UE_SMALL_NUMBER) return;
+
+	FVector BackdropScale = Backdrop->GetActorScale3D();
+	BackdropScale.X = 2.0 / ProjectedWidth;
+	BackdropScale.Y = 2.0 / ProjectedHeight;
+	Backdrop->SetActorScale3D(BackdropScale);
+	BackdropViewportSize = ViewportSize;
 }
 
 // 생성할 세션 이름 입력
@@ -171,14 +237,26 @@ void UPFTitle::ShowJoinFailed()
 	SessionNameInputBox->SetKeyboardFocus();
 }
 
-// 세션 처리 중 중복 입력 차단
-void UPFTitle::SetSessionBusy(bool bBusy)
+// 세션 입력 제한, 입장 중 타이틀 숨김
+void UPFTitle::SetSessionBusy(bool bBusy, bool bEnteringGame)
 {
 	bSessionBusy = bBusy;
+	if (bEnteringGame)
+	{
+		if (GetVisibility() != ESlateVisibility::Collapsed)
+		{
+			SessionVisibility = GetVisibility();
+		}
+		SetVisibility(ESlateVisibility::Collapsed);
+	}
+	else if (GetVisibility() == ESlateVisibility::Collapsed)
+	{
+		SetVisibility(SessionVisibility);
+	}
 	CreateSessionButton->SetIsEnabled(!bBusy);
 	JoinSessionButton->SetIsEnabled(!bBusy);
 	SessionNameInputBox->SetIsEnabled(!bBusy);
-	ExitGameButton->SetIsEnabled(true);
+	ExitGameButton->SetIsEnabled(!bEnteringGame);
 
 	if (bBusy)
 	{
@@ -186,6 +264,14 @@ void UPFTitle::SetSessionBusy(bool bBusy)
 		ChooseCharacter->SetVisibility(ESlateVisibility::Hidden);
 		SessionNameInputBox->SetVisibility(ESlateVisibility::Hidden);
 	}
+}
+
+// 세션 상태 안내 표시
+void UPFTitle::SetSessionNotice(const FText& Message)
+{
+	if (!SessionNoticeText) return;
+	SessionNoticeText->SetText(Message);
+	SessionNoticeText->SetVisibility(Message.IsEmpty() ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
 }
 
 // 캐릭터 선택 후 세션 시작
@@ -211,6 +297,10 @@ void UPFTitle::StartSession()
 // 게임 종료 요청
 void UPFTitle::ExitGame()
 {
+	if (!IsInViewport() || GetVisibility() == ESlateVisibility::Collapsed || !ExitGameButton->GetIsEnabled())
+	{
+		return;
+	}
 	PFLOG(Warning, TEXT("Exit Game"));
 	GetWorld()->GetGameInstance<UPFGameInstance>()->ExitGame();
 }

@@ -22,6 +22,7 @@ DECLARE_MULTICAST_DELEGATE_OneParam(FPFCharacterEvent, APFCharacter*);
 
 class USoundBase;
 class USoundConcurrency;
+class UPFShrubStealthComponent;
 
 // 공통 캐릭터 클래스
 UCLASS(Abstract, meta=(PrioritizeCategories="PFCharacter UI GAS"))
@@ -30,7 +31,7 @@ class PORTFOLIO_API APFCharacter : public ACharacter, public IAbilitySystemInter
 	GENERATED_BODY()
 
 public:
-	APFCharacter();
+	APFCharacter(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
 
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
 
@@ -63,6 +64,8 @@ public:
 	float GetDamage() const;
 	UPFAttributeSet* GetAttributeSet() const { return AttributeSet; }
 	bool IsDeadCharacter() const;
+	bool IsShrubConcealed() const;
+	void BreakShrubConcealmentForAttack();
 	bool HasStateTag(const FGameplayTag& StateTag) const;
 	virtual bool IsAttackCommandActive() const;
 	EPFCharacterRole GetCharacterRole() const { return CharacterRole; }
@@ -70,12 +73,16 @@ public:
 	bool IsEnemyCharacter() const { return CharacterRole == EPFCharacterRole::ENEMY; }
 	bool IsLocalPlayerCharacter() const { return IsPlayerCharacter() && IsLocallyControlled(); }
 	const FPFCharacterAISettings& GetAISettings() const { return AISettings; }
+	bool IsLevelStartActive() const { return bLevelStartActive; }
+	UFUNCTION(BlueprintPure, Category = "Jump Pad")
+	bool IsJumpPadFlightActive() const { return bJumpPadFlightActive; }
 	bool IsMovementBlocked() const;
 	bool HasAirborneTag() const;
 	bool IsSprinting() const;
 	bool HasCrosshair() const { return bHasCrosshair; }
 	bool IsViewpointFixed() const { return ViewpointFixed; }
 	ECONTROLMODE GetCurrentControlMode() const { return CurrentControlMode; }
+	EPFDirection GetMovementInputDirection() const { return MovementInputDirection; }
 	class USpringArmComponent* GetCameraSpringArm() const { return SpringArm; }
 	class UCameraComponent* GetFollowCamera() const { return Camera; }
 	float GetTurnSpeed() const { return TurnSpeed; }
@@ -85,6 +92,7 @@ public:
 	void SetAIAttackCommand(bool bRequested, bool bExecute);
 	bool TryGetAttackAim(FVector& OutAimPoint);
 	void ClearControlCommands();
+	bool BeginJumpPadFlight(const FVector& LaunchVelocity, float Duration);
 	void SetMovementInputDirection(EPFDirection NewDirection);
 	void SetAIMovementDirection(EPFDirection NewDirection);
 	void SetControlMode(ECONTROLMODE NewControlMode);
@@ -114,6 +122,7 @@ public:
 	void OnLevelStartMontageStarted(UAnimMontage* Montage);
 
 protected:
+	virtual bool CanJumpInternal_Implementation() const override;
 	virtual void InitAbilityActorInfo();
 	void GivePlayerAbilities();
 	void RefreshControlRole();
@@ -169,6 +178,13 @@ protected:
 	virtual void OnRep_FinalDir();
 	UFUNCTION()
 	void OnRep_LevelStartActive();
+	UFUNCTION()
+	void OnRep_JumpPadFlightActive();
+	UFUNCTION(Client, Reliable)
+	void Client_BeginJumpPadFlight(FVector LaunchVelocity, FVector StartLocation, float ServerStartTime, float Duration);
+	UFUNCTION(Client, Reliable)
+	void Client_EndJumpPadFlight(bool bStopMovement);
+	void EndJumpPadFlight(bool bStopMovement = false);
 
 	UFUNCTION()
 	virtual void OnMontageEnd(UAnimMontage* Montage, bool bInterrupted);
@@ -176,6 +192,10 @@ protected:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 protected:
+	// 수풀 은신 판정, 복제, 표시
+	UPROPERTY(VisibleAnywhere, Category = "Environment")
+	TObjectPtr<UPFShrubStealthComponent> ShrubStealth;
+
 	UPROPERTY(ReplicatedUsing = OnRep_CharacterRole)
 	EPFCharacterRole CharacterRole = EPFCharacterRole::ROLE_END;
 	UPROPERTY(EditDefaultsOnly, Category = "AI")
@@ -258,6 +278,14 @@ protected:
 	EPFDirection FinalDir;
 	UPROPERTY(ReplicatedUsing = OnRep_LevelStartActive)
 	bool bLevelStartActive = false;
+	UPROPERTY(ReplicatedUsing = OnRep_JumpPadFlightActive)
+	bool bJumpPadFlightActive = false;
+	bool bJumpPadMovementSaved = false;
+	float SavedJumpPadAirControl = 0.f;
+	float SavedJumpPadFallingFriction = 0.f;
+	float SavedJumpPadFallingBraking = 0.f;
+	// 점프대 비행 종료 타이머
+	FTimerHandle JumpPadFlightTimer;
 
 	// 연출용 파티클, 사운드
 	UPROPERTY()

@@ -1,50 +1,7 @@
 #include "UI/HUD/PFCharacterWidget.h"
 #include "Components/TextBlock.h"
 #include "Components/ProgressBar.h"
-#include "Styling/CoreStyle.h"
-#include "Widgets/Layout/SBox.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/Text/STextBlock.h"
-
-TSharedRef<SWidget> UPFCharacterWidget::RebuildWidget()
-{
-	TSharedRef<SWidget> HealthWidget = Super::RebuildWidget();
-
-	// 체력바 위에 플레이어 이름 배치
-	return SNew(SVerticalBox)
-		+ SVerticalBox::Slot()
-		.AutoHeight()
-		.HAlign(HAlign_Center)
-		[
-			SAssignNew(UsernameBox, SBox)
-			.MaxDesiredWidth(300.f)
-			.Padding(FMargin(0.f, 0.f, 0.f, 4.f))
-			.Clipping(EWidgetClipping::ClipToBounds)
-			.Visibility(DisplayUsername.IsEmpty() ? EVisibility::Collapsed : EVisibility::HitTestInvisible)
-			[
-				SAssignNew(UsernameText, STextBlock)
-				.Text(FText::FromString(DisplayUsername))
-				.Font(FCoreStyle::GetDefaultFontStyle(TEXT("Bold"), 24))
-				.ColorAndOpacity(FLinearColor::White)
-				.ShadowColorAndOpacity(FLinearColor::Black)
-				.ShadowOffset(FVector2D(1.f, 1.f))
-				.Justification(ETextJustify::Center)
-				.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
-			]
-		]
-		+ SVerticalBox::Slot()
-		.FillHeight(1.f)
-		[
-			HealthWidget
-		];
-}
-
-void UPFCharacterWidget::ReleaseSlateResources(bool bReleaseChildren)
-{
-	Super::ReleaseSlateResources(bReleaseChildren);
-	UsernameBox.Reset();
-	UsernameText.Reset();
-}
+#include "Components/SizeBox.h"
 
 // 플레이어 이름, 표시 여부 갱신
 void UPFCharacterWidget::SetDisplayUsername(const FString& NewUsername)
@@ -55,13 +12,13 @@ void UPFCharacterWidget::SetDisplayUsername(const FString& NewUsername)
 	}
 
 	DisplayUsername = NewUsername;
-	if (UsernameText.IsValid())
+	if (UsernameText)
 	{
 		UsernameText->SetText(FText::FromString(DisplayUsername));
 	}
-	if (UsernameBox.IsValid())
+	if (UsernameBox)
 	{
-		UsernameBox->SetVisibility(DisplayUsername.IsEmpty() ? EVisibility::Collapsed : EVisibility::HitTestInvisible);
+		UsernameBox->SetVisibility(DisplayUsername.IsEmpty() ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
 	}
 }
 
@@ -86,6 +43,18 @@ void UPFCharacterWidget::BindAttributeSet(UPFAttributeSet* NewAttributeSet, bool
 void UPFCharacterWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
+	// 다른 플레이어 이름 위젯 연결
+	UsernameBox = Cast<USizeBox>(GetWidgetFromName(TEXT("UsernameContainer")));
+	UsernameText = Cast<UTextBlock>(GetWidgetFromName(TEXT("TEXT_Username")));
+	if (UsernameText)
+	{
+		UsernameText->SetText(FText::FromString(DisplayUsername));
+	}
+	if (UsernameBox)
+	{
+		UsernameBox->SetVisibility(DisplayUsername.IsEmpty() ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
+	}
+
 	// 체력바, 로컬 플레이어 수치 위젯 연결
 	HPProgressBar = Cast<UProgressBar>(GetWidgetFromName(TEXT("PB_HPBar")));
 	PFCHECK(HPProgressBar);

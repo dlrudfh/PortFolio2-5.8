@@ -17,10 +17,12 @@ public:
 	void StartSession();
 	void ShowCharacterSelection();
 	void ShowJoinFailed();
-	void SetSessionBusy(bool bBusy);
+	void SetSessionBusy(bool bBusy, bool bEnteringGame = false);
+	void SetSessionNotice(const FText& Message);
 
 protected:
 	virtual void NativeConstruct() override;
+	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
 
 private:
 	UFUNCTION()
@@ -47,8 +49,14 @@ private:
 	class UEditableTextBox* SessionNameInputBox;
 	UPROPERTY()
 	class UTextBlock* ChooseCharacter;
+	// 연결 종료, 세션 복구 안내
+	UPROPERTY()
+	class UTextBlock* SessionNoticeText;
+	TWeakObjectPtr<class AStaticMeshActor> CharacterSelectBackdrop;
+	FIntPoint BackdropViewportSize = FIntPoint::ZeroValue;
 
 	bool IsCreateSession = true;
 	bool bSessionBusy = false;
+	ESlateVisibility SessionVisibility = ESlateVisibility::SelfHitTestInvisible;
 	FString SessionName;
 };

@@ -35,6 +35,8 @@ bool UPFGA_BasicAttack::CanActivateAbility(
 	const FGameplayTagContainer* TargetTags,
 	FGameplayTagContainer* OptionalRelevantTags) const
 {
+	const APFCharacter* Character = ActorInfo ? Cast<APFCharacter>(ActorInfo->AvatarActor.Get()) : nullptr;
+	if (Character && Character->IsJumpPadFlightActive()) return false;
 	const UAbilitySystemComponent* AbilitySystem = ActorInfo ? ActorInfo->AbilitySystemComponent.Get() : nullptr;
 	const FGameplayAbilitySpec* AbilitySpec = AbilitySystem ? AbilitySystem->FindAbilitySpecFromHandle(Handle) : nullptr;
 	if (!AbilitySpec || AbilitySpec->IsActive())
@@ -75,6 +77,7 @@ void UPFGA_BasicAttack::ActivateAbility(
 	}
 
 	// 종료 조건 등록, 공격 연출 준비
+	Character->BreakShrubConcealmentForAttack();
 	WaitForCommonEndConditions();
 	BoundAnimInstance = AnimInstance;
 

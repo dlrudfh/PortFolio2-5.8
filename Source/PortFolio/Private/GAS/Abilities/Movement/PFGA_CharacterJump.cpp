@@ -22,7 +22,8 @@ bool UPFGA_CharacterJump::CanActivateAbility(
 	FGameplayTagContainer* OptionalRelevantTags
 ) const
 {
-	if (!ActorInfo || !Cast<APFCharacter>(ActorInfo->AvatarActor.Get()))
+	const APFCharacter* Character = ActorInfo ? Cast<APFCharacter>(ActorInfo->AvatarActor.Get()) : nullptr;
+	if (!Character || Character->IsJumpPadFlightActive())
 	{
 		return false;
 	}

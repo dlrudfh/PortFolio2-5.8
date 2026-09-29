@@ -1,4 +1,4 @@
-﻿#include "Animation/PFAnimInstance.h"
+#include "Animation/PFAnimInstance.h"
 
 #include "AbilitySystemBlueprintLibrary.h"
 #include "AbilitySystemComponent.h"
@@ -15,8 +15,12 @@ UPFAnimInstance::UPFAnimInstance() : CurrentPawnSpeed(0.f), IsLevelStart(true), 
 // 게임 스레드에서 상태 태그 캐시 갱신
 void UPFAnimInstance::RefreshCachedStateTags()
 {
-	check(IsInGameThread());
-	CachedStateTags.Reset();
+	// 작업 스레드의 캐릭터, ASC 직접 접근 방지
+	if (!ensure(IsInGameThread()))
+	{
+		return;
+	}
+	uint8 StateFlags = 0;
 
 	// 캐릭터, 부착 부모의 ASC 조회
 	const APFCharacter* Character = Cast<APFCharacter>(TryGetPawnOwner());
@@ -28,44 +32,55 @@ void UPFAnimInstance::RefreshCachedStateTags()
 	const UAbilitySystemComponent* AbilitySystem = Character ? Character->GetAbilitySystemComponent() : nullptr;
 	if (AbilitySystem)
 	{
-		AbilitySystem->GetOwnedGameplayTags(CachedStateTags);
+		StateFlags |= (AbilitySystem->HasMatchingGameplayTag(PFGameplayTags::Character_State_Jumping)
+			|| AbilitySystem->HasMatchingGameplayTag(PFGameplayTags::Character_State_Falling)) ? InAirFlag : 0;
+		StateFlags |= AbilitySystem->HasMatchingGameplayTag(PFGameplayTags::Character_State_Attacking) ? AttackFlag : 0;
+		StateFlags |= AbilitySystem->HasMatchingGameplayTag(PFGameplayTags::Character_State_Attack_ComboWindow) ? ComboWindowFlag : 0;
+		StateFlags |= AbilitySystem->HasMatchingGameplayTag(PFGameplayTags::Character_State_Ultimate) ? UltimateFlag : 0;
+		StateFlags |= AbilitySystem->HasMatchingGameplayTag(PFGameplayTags::Character_State_Sprinting) ? SprintFlag : 0;
+		StateFlags |= AbilitySystem->HasMatchingGameplayTag(PFGameplayTags::Character_State_Dead) ? DeadFlag : 0;
 	}
+
+	// 갱신 중인 상태가 작업 스레드에 일부만 노출되는 문제 방지
+	CachedStateFlags.store(StateFlags, std::memory_order_relaxed);
 }
 
 // 공중 상태 조회
 bool UPFAnimInstance::IsInAir() const
 {
-	return CachedStateTags.HasTag(PFGameplayTags::Character_State_Jumping) || CachedStateTags.HasTag(PFGameplayTags::Character_State_Falling);
+	return (CachedStateFlags.load(std::memory_order_relaxed) & InAirFlag) != 0;
 }
 
 // 공격 상태 조회
 bool UPFAnimInstance::IsOnAttack() const
 {
-	return CachedStateTags.HasTag(PFGameplayTags::Character_State_Attacking);
+	return (CachedStateFlags.load(std::memory_order_relaxed) & AttackFlag) != 0;
 }
 
 // 콤보 입력 구간 조회
 bool UPFAnimInstance::IsSaveAttack() const
 {
-	return CachedStateTags.HasTag(PFGameplayTags::Character_State_Attack_ComboWindow);
+	return (CachedStateFlags.load(std::memory_order_relaxed) & ComboWindowFlag) != 0;
 }
 
 // 궁극기 상태 조회
 bool UPFAnimInstance::IsUltimate() const
 {
-	return CachedStateTags.HasTag(PFGameplayTags::Character_State_Ultimate);
+	return (CachedStateFlags.load(std::memory_order_relaxed) & UltimateFlag) != 0;
 }
 
 // 질주 애니메이션 조건 조회
 bool UPFAnimInstance::IsSprint() const
 {
-	return CachedStateTags.HasTag(PFGameplayTags::Character_State_Sprinting) && !IsOnAttack() && !IsUltimate();
+	// 서로 다른 갱신 시점의 상태가 섞이는 문제 방지
+	const uint8 StateFlags = CachedStateFlags.load(std::memory_order_relaxed);
+	return (StateFlags & SprintFlag) != 0 && (StateFlags & (AttackFlag | UltimateFlag)) == 0;
 }
 
 // 사망 상태 조회
 bool UPFAnimInstance::IsDead() const
 {
-	return CachedStateTags.HasTag(PFGameplayTags::Character_State_Dead);
+	return (CachedStateFlags.load(std::memory_order_relaxed) & DeadFlag) != 0;
 }
 
 // 등장 몽타주 확인

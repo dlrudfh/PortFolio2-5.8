@@ -12,10 +12,13 @@
 #include "CollisionQueryParams.h"
 #include "CollisionShape.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/PrimitiveComponent.h"
 #include "Engine/StaticMeshActor.h"
 #include "Engine/World.h"
+#include "HAL/IConsoleManager.h"
 #include "Kismet/GameplayStatics.h"
 #include "Misc/PackageName.h"
+#include "NavigationSystem.h"
 #include "AbilitySystemComponent.h"
 #include "GAS/Attributes/PFAttributeSet.h"
 #include "GAS/Effects/PFGE_StatGameplayEffects.h"
@@ -26,6 +29,16 @@ APFGameMode::APFGameMode()
 	DefaultPawnClass = APFTwinBlast::StaticClass();
 	PlayerControllerClass = APFPlayerController::StaticClass();
 	PlayerStateClass = APFPlayerState::StaticClass();
+	TestMap2 = TSoftObjectPtr<UWorld>(FSoftObjectPath(TEXT("/Game/ThirdPerson/Maps/Map2.Map2")));
+	TestMap3 = TSoftObjectPtr<UWorld>(FSoftObjectPath(TEXT("/Game/ThirdPerson/Maps/Map3.Map3")));
+	TestMap2.ToSoftObjectPath().PostLoadPath(nullptr);
+	TestMap3.ToSoftObjectPath().PostLoadPath(nullptr);
+	for (int32 MapIndex = 4; MapIndex <= 8; ++MapIndex)
+	{
+		TSoftObjectPtr<UWorld>& Map = AdditionalTestMaps.Emplace_GetRef(FSoftObjectPath(
+			FString::Printf(TEXT("/Game/ThirdPerson/Maps/Map%d.Map%d"), MapIndex, MapIndex)));
+		Map.ToSoftObjectPath().PostLoadPath(nullptr);
+	}
 }
 
 void APFGameMode::BeginPlay()
@@ -38,6 +51,12 @@ void APFGameMode::BeginPlay()
 
 void APFGameMode::HandleStartingNewPlayer_Implementation(APlayerController* NewPlayer)
 {
+	const UWorld* World = GetWorld();
+	if (!World || FPackageName::GetShortName(World->GetMapName()).Contains(TEXT("Title")))
+	{
+		return;
+	}
+
 	if (!UsesInitialSpawnFlow(NewPlayer))
 	{
 		Super::HandleStartingNewPlayer_Implementation(NewPlayer);
@@ -52,6 +71,12 @@ void APFGameMode::HandleStartingNewPlayer_Implementation(APlayerController* NewP
 
 void APFGameMode::RestartPlayer(AController* NewPlayer)
 {
+	const UWorld* World = GetWorld();
+	if (!World || FPackageName::GetShortName(World->GetMapName()).Contains(TEXT("Title")))
+	{
+		return;
+	}
+
 	if (UsesInitialSpawnFlow(NewPlayer))
 	{
 		APFPlayerController* PlayerController = Cast<APFPlayerController>(NewPlayer);
@@ -63,6 +88,57 @@ void APFGameMode::RestartPlayer(AController* NewPlayer)
 	}
 
 	Super::RestartPlayer(NewPlayer);
+}
+
+// 테스트 맵 전환, 세션 연결 유지
+void APFGameMode::ChangeTestMap()
+{
+	UWorld* World = GetWorld();
+	if (!HasAuthority() || !World || World->IsInSeamlessTravel() || !World->NextURL.IsEmpty())
+	{
+		return;
+	}
+
+	const FString CurrentMap = UGameplayStatics::GetCurrentLevelName(World, true);
+	FString Destination;
+	TArray<TSoftObjectPtr<UWorld>> Maps = { TestMap2, TestMap3 };
+	Maps.Append(AdditionalTestMaps);
+	for (int32 Index = 0; Index < Maps.Num(); ++Index)
+	{
+		if (CurrentMap == Maps[Index].GetAssetName())
+		{
+			Destination = Maps[(Index + 1) % Maps.Num()].ToSoftObjectPath().GetLongPackageName();
+			break;
+		}
+	}
+	if (Destination.IsEmpty() || !FPackageName::DoesPackageExist(Destination))
+	{
+		return;
+	}
+
+	// 모든 플레이어의 입장 완료 후 카메라 상태 보관
+	for (auto It = World->GetPlayerControllerIterator(); It; ++It)
+	{
+		APFPlayerController* PlayerController = Cast<APFPlayerController>(It->Get());
+		if (!PlayerController || !PlayerController->bInitialSpawnComplete
+			|| !PlayerController->HasClientLoadedCurrentWorld())
+		{
+			return;
+		}
+		PlayerController->CaptureCharacterState();
+	}
+
+	// PIE에서도 데이터 보존 이동을 사용하고 기존 콘솔 값 복원
+	IConsoleVariable* PIETravel = World->WorldType == EWorldType::PIE
+		? IConsoleManager::Get().FindConsoleVariable(TEXT("net.AllowPIESeamlessTravel")) : nullptr;
+	const int32 PreviousPIETravel = PIETravel ? PIETravel->GetInt() : 0;
+	if (PIETravel) PIETravel->SetWithCurrentPriority(1);
+	const bool bTravelStarted = World->ServerTravel(Destination + TEXT("?SeamlessTravel"), true);
+	if (PIETravel) PIETravel->SetWithCurrentPriority(PreviousPIETravel);
+	if (!bTravelStarted)
+	{
+		PFLOG(Warning, TEXT("Test map travel failed: %s"), *Destination);
+	}
 }
 
 // 최초 생성 대상 확인
@@ -135,6 +211,10 @@ void APFGameMode::TryStartInitialPlayer(APFPlayerController* NewPlayer)
 
 	NewPlayer->bInitialSpawnComplete = IsValid(NewPlayer->GetPawn());
 	NewPlayer->bInitialSpawnInProgress = false;
+	if (NewPlayer->bInitialSpawnComplete)
+	{
+		NewPlayer->RestoreCharacterState();
+	}
 	if (!NewPlayer->bInitialSpawnComplete)
 	{
 		PFLOG(Warning, TEXT("Initial player spawn failed: %s"), *GetNameSafe(NewPlayer));
@@ -166,9 +246,11 @@ bool APFGameMode::TryFindInitialPlayerSpawnTransform(APlayerController* NewPlaye
 // 지면, 충돌을 고려한 생성 위치 탐색
 bool APFGameMode::FindSpawnTransform(UWorld* World, const UCapsuleComponent* Capsule,
 	const FCollisionQueryParams& QueryParams, int32& RemainingAttempts,
-	bool bCheckBlockingCollision, FTransform& OutSpawnTransform)
+	bool bCheckBlockingCollision, FTransform& OutSpawnTransform,
+	const FVector* SpawnCenter, float SpawnRadius)
 {
-	if (!World || RemainingAttempts <= 0 || (bCheckBlockingCollision && !Capsule))
+	if (!World || RemainingAttempts <= 0 || (bCheckBlockingCollision && !Capsule)
+		|| (SpawnCenter && SpawnRadius <= 0.f))
 	{
 		return false;
 	}
@@ -184,7 +266,8 @@ bool APFGameMode::FindSpawnTransform(UWorld* World, const UCapsuleComponent* Cap
 	AStaticMeshActor* SpawnAreaActor = nullptr;
 	for (AActor* CandidateActor : StaticMeshActors)
 	{
-		if (CandidateActor && CandidateActor->GetActorNameOrLabel().Equals(TEXT("SM_Cube"), ESearchCase::CaseSensitive))
+		if (CandidateActor && (CandidateActor->ActorHasTag(TEXT("PFRequireNavigableSpawn"))
+			|| CandidateActor->GetActorNameOrLabel().Equals(TEXT("SM_Cube"), ESearchCase::CaseSensitive)))
 		{
 			SpawnAreaActor = Cast<AStaticMeshActor>(CandidateActor);
 			break;
@@ -197,10 +280,17 @@ bool APFGameMode::FindSpawnTransform(UWorld* World, const UCapsuleComponent* Cap
 
 	// 캡슐 크기를 고려한 생성 범위 계산
 	const FBox SpawnAreaBounds = SpawnAreaActor->GetComponentsBoundingBox(true);
-	const float MinX = SpawnAreaBounds.Min.X + CapsuleRadius + BoundsEdgePadding;
-	const float MaxX = SpawnAreaBounds.Max.X - CapsuleRadius - BoundsEdgePadding;
-	const float MinY = SpawnAreaBounds.Min.Y + CapsuleRadius + BoundsEdgePadding;
-	const float MaxY = SpawnAreaBounds.Max.Y - CapsuleRadius - BoundsEdgePadding;
+	float MinX = SpawnAreaBounds.Min.X + CapsuleRadius + BoundsEdgePadding;
+	float MaxX = SpawnAreaBounds.Max.X - CapsuleRadius - BoundsEdgePadding;
+	float MinY = SpawnAreaBounds.Min.Y + CapsuleRadius + BoundsEdgePadding;
+	float MaxY = SpawnAreaBounds.Max.Y - CapsuleRadius - BoundsEdgePadding;
+	if (SpawnCenter)
+	{
+		MinX = FMath::Max(MinX, static_cast<float>(SpawnCenter->X - SpawnRadius));
+		MaxX = FMath::Min(MaxX, static_cast<float>(SpawnCenter->X + SpawnRadius));
+		MinY = FMath::Max(MinY, static_cast<float>(SpawnCenter->Y - SpawnRadius));
+		MaxY = FMath::Min(MaxY, static_cast<float>(SpawnCenter->Y + SpawnRadius));
+	}
 	if (!SpawnAreaBounds.IsValid || MinX >= MaxX || MinY >= MaxY)
 	{
 		return false;
@@ -221,6 +311,11 @@ bool APFGameMode::FindSpawnTransform(UWorld* World, const UCapsuleComponent* Cap
 		--RemainingAttempts;
 		const float RandomX = FMath::FRandRange(MinX, MaxX);
 		const float RandomY = FMath::FRandRange(MinY, MaxY);
+		if (SpawnCenter && FVector::DistSquared2D(FVector(RandomX, RandomY, SpawnCenter->Z), *SpawnCenter)
+			> FMath::Square(SpawnRadius))
+		{
+			continue;
+		}
 		const FVector TraceStart(RandomX, RandomY, SpawnAreaBounds.Max.Z + VerticalTracePadding);
 		const FVector TraceEnd(RandomX, RandomY, SpawnAreaBounds.Min.Z - VerticalTracePadding);
 
@@ -232,6 +327,23 @@ bool APFGameMode::FindSpawnTransform(UWorld* World, const UCapsuleComponent* Cap
 		}
 
 		const FVector SpawnLocation = GroundHit.ImpactPoint + FVector(0.f, 0.f, CapsuleHalfHeight + 2.f);
+		if (SpawnAreaActor->ActorHasTag(TEXT("PFRequireNavigableSpawn")))
+		{
+			const UPrimitiveComponent* GroundComponent = GroundHit.GetComponent();
+			if (!GroundComponent || !GroundComponent->ComponentHasTag(TEXT("PFMapSpawnSurface")))
+			{
+				continue;
+			}
+			UNavigationSystemV1* Navigation = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
+			FNavLocation NavLocation;
+			if (!Navigation || !Navigation->ProjectPointToNavigation(GroundHit.ImpactPoint, NavLocation,
+				FVector(CapsuleRadius, CapsuleRadius, 100.f))
+				|| FVector::DistSquared2D(NavLocation.Location, GroundHit.ImpactPoint) > FMath::Square(CapsuleRadius)
+				|| FMath::Abs(NavLocation.Location.Z - GroundHit.ImpactPoint.Z) > 100.f)
+			{
+				continue;
+			}
+		}
 		// 생성 위치의 캡슐 충돌 확인
 		if (bCheckBlockingCollision)
 		{

@@ -4,39 +4,17 @@
 #include "UI/Inventory/PFCooldownOverlayWidget.h"
 #include "Props/PFItem.h"
 #include "System/Framework/PFPlayerState.h"
-#include "Blueprint/WidgetLayoutLibrary.h"
-#include "Blueprint/WidgetTree.h"
 #include "Components/Border.h"
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
 #include "Components/Image.h"
-#include "Components/Overlay.h"
-#include "Components/OverlaySlot.h"
-#include "Components/SizeBox.h"
 #include "Components/TextBlock.h"
-#include "Components/UniformGridPanel.h"
-#include "Components/UniformGridSlot.h"
-#include "Components/VerticalBox.h"
-#include "Components/VerticalBoxSlot.h"
 #include "Engine/Texture2D.h"
 #include "GameFramework/PlayerController.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Application/SlateUser.h"
 #include "Input/Reply.h"
 #include "InputCoreTypes.h"
-
-namespace
-{
-	constexpr float InventorySlotFramePadding = 2.f;
-	constexpr float InventorySlotImagePadding = 0.f;
-	constexpr float InventorySlotVisualSize = 84.f - ((InventorySlotFramePadding + InventorySlotImagePadding) * 2.f);
-
-	// 퀵슬롯 키 번호 문자열 반환
-	FString GetQuickSlotLabel(int32 QuickSlotIndex)
-	{
-		return FString::Printf(TEXT("%d"), QuickSlotIndex + 1);
-	}
-}
 
 // 아이템 아이콘 조회, 캐시
 UTexture2D* UPFInventoryWidget::GetInventoryItemTexture(int32 ItemID)
@@ -73,284 +51,54 @@ UTexture2D* UPFInventoryWidget::GetInventoryItemTexture(int32 ItemID)
 	return Texture;
 }
 
-TSharedRef<SWidget> UPFInventoryWidget::RebuildWidget()
-{
-	if (!WidgetTree->RootWidget)
-	{
-		// 인벤토리 창, 제목 표시줄 구성
-		RootCanvas = WidgetTree->ConstructWidget<UCanvasPanel>(UCanvasPanel::StaticClass(), TEXT("InventoryRoot"));
-		WidgetTree->RootWidget = RootCanvas;
-
-		InventoryBorder = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("InventoryWindow"));
-		InventoryBorder->SetBrushColor(FLinearColor(0.02f, 0.03f, 0.05f, 0.92f));
-		if (UCanvasPanelSlot* WindowSlot = RootCanvas->AddChildToCanvas(InventoryBorder))
-		{
-			WindowSlot->SetAnchors(FAnchors(0.f, 0.f, 0.f, 0.f));
-			WindowSlot->SetAlignment(FVector2D::ZeroVector);
-			WindowSlot->SetPosition(FVector2D(30.f, 30.f));
-			WindowSlot->SetSize(FVector2D(436.f, 497.f));
-		}
-
-		UVerticalBox* LayoutBox = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), TEXT("InventoryLayout"));
-		InventoryBorder->SetContent(LayoutBox);
-
-		TitleBarBorder = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("InventoryTitleBar"));
-		TitleBarBorder->SetBrushColor(FLinearColor(0.12f, 0.18f, 0.22f, 1.f));
-		if (UVerticalBoxSlot* TitleSlot = LayoutBox->AddChildToVerticalBox(TitleBarBorder))
-		{
-			TitleSlot->SetPadding(FMargin(8.f, 8.f, 8.f, 6.f));
-			TitleSlot->SetHorizontalAlignment(HAlign_Fill);
-		}
-
-		TitleText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("InventoryTitle"));
-		TitleText->SetText(FText::FromString(TEXT("인벤토리")));
-		TitleText->SetColorAndOpacity(FSlateColor(FLinearColor::White));
-		TitleBarBorder->SetContent(TitleText);
-
-		// 인벤토리 슬롯 배치
-		InventoryGrid = WidgetTree->ConstructWidget<UUniformGridPanel>(UUniformGridPanel::StaticClass(), TEXT("InventoryGrid"));
-		if (UVerticalBoxSlot* GridSlot = LayoutBox->AddChildToVerticalBox(InventoryGrid))
-		{
-			GridSlot->SetPadding(FMargin(8.f, 4.f, 8.f, 8.f));
-			GridSlot->SetHorizontalAlignment(HAlign_Fill);
-			GridSlot->SetVerticalAlignment(VAlign_Fill);
-		}
-
-		InventorySlotBorders.SetNum(APFPlayerState::InventorySlotCount);
-		InventorySlotImages.SetNum(APFPlayerState::InventorySlotCount);
-		InventorySlotCountTexts.SetNum(APFPlayerState::InventorySlotCount);
-		InventoryCooldownOverlays.SetNum(APFPlayerState::InventorySlotCount);
-		InventoryCooldownTexts.SetNum(APFPlayerState::InventorySlotCount);
-
-		for (int32 SlotIndex = 0; SlotIndex < APFPlayerState::InventorySlotCount; ++SlotIndex)
-		{
-			USizeBox* SlotSizeBox = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass(), *FString::Printf(TEXT("InventorySlotSize_%d"), SlotIndex));
-			SlotSizeBox->SetWidthOverride(SlotSize);
-			SlotSizeBox->SetHeightOverride(SlotSize);
-
-			UBorder* SlotBorder = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), *FString::Printf(TEXT("InventorySlot_%d"), SlotIndex));
-			SlotBorder->SetBrushColor(FLinearColor(0.28f, 0.31f, 0.35f, 1.f));
-			SlotBorder->SetPadding(FMargin(InventorySlotFramePadding));
-			SlotSizeBox->SetContent(SlotBorder);
-
-			UBorder* InnerSlotBorder = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), *FString::Printf(TEXT("InventorySlotInner_%d"), SlotIndex));
-			InnerSlotBorder->SetBrushColor(FLinearColor(0.09f, 0.11f, 0.14f, 1.f));
-			SlotBorder->SetContent(InnerSlotBorder);
-
-			UOverlay* SlotOverlay = WidgetTree->ConstructWidget<UOverlay>(UOverlay::StaticClass(), *FString::Printf(TEXT("InventorySlotOverlay_%d"), SlotIndex));
-			InnerSlotBorder->SetContent(SlotOverlay);
-
-			UImage* SlotImage = WidgetTree->ConstructWidget<UImage>(UImage::StaticClass(), *FString::Printf(TEXT("InventorySlotImage_%d"), SlotIndex));
-			SlotImage->SetVisibility(ESlateVisibility::HitTestInvisible);
-			if (UOverlaySlot* ImageSlot = SlotOverlay->AddChildToOverlay(SlotImage))
-			{
-				ImageSlot->SetHorizontalAlignment(HAlign_Fill);
-				ImageSlot->SetVerticalAlignment(VAlign_Fill);
-				ImageSlot->SetPadding(FMargin(InventorySlotImagePadding));
-			}
-
-			UTextBlock* SlotCountText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), *FString::Printf(TEXT("InventorySlotCount_%d"), SlotIndex));
-			SlotCountText->SetColorAndOpacity(FSlateColor(FLinearColor::White));
-			SlotCountText->SetJustification(ETextJustify::Right);
-			SlotCountText->SetVisibility(ESlateVisibility::HitTestInvisible);
-			if (UOverlaySlot* CountSlot = SlotOverlay->AddChildToOverlay(SlotCountText))
-			{
-				CountSlot->SetHorizontalAlignment(HAlign_Right);
-				CountSlot->SetVerticalAlignment(VAlign_Bottom);
-				CountSlot->SetPadding(FMargin(0.f, 0.f, 4.f, 2.f));
-			}
-
-			// 슬롯 쿨타임 마스크, 시간 표시
-			UPFCooldownOverlayWidget* CooldownOverlay = WidgetTree->ConstructWidget<UPFCooldownOverlayWidget>(UPFCooldownOverlayWidget::StaticClass(), *FString::Printf(TEXT("InventoryCooldownOverlay_%d"), SlotIndex));
-			CooldownOverlay->SetVisibility(ESlateVisibility::Hidden);
-			if (UOverlaySlot* CooldownOverlaySlot = SlotOverlay->AddChildToOverlay(CooldownOverlay))
-			{
-				CooldownOverlaySlot->SetHorizontalAlignment(HAlign_Fill);
-				CooldownOverlaySlot->SetVerticalAlignment(VAlign_Fill);
-			}
-
-			UTextBlock* CooldownText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), *FString::Printf(TEXT("InventoryCooldownText_%d"), SlotIndex));
-			CooldownText->SetColorAndOpacity(FSlateColor(FLinearColor::White));
-			CooldownText->SetJustification(ETextJustify::Center);
-			CooldownText->SetVisibility(ESlateVisibility::Hidden);
-			if (UOverlaySlot* CooldownTextSlot = SlotOverlay->AddChildToOverlay(CooldownText))
-			{
-				CooldownTextSlot->SetHorizontalAlignment(HAlign_Center);
-				CooldownTextSlot->SetVerticalAlignment(VAlign_Center);
-			}
-
-			if (UUniformGridSlot* GridPanelSlot = InventoryGrid->AddChildToUniformGrid(SlotSizeBox, SlotIndex / InventoryColumnCount, SlotIndex % InventoryColumnCount))
-			{
-				GridPanelSlot->SetHorizontalAlignment(HAlign_Center);
-				GridPanelSlot->SetVerticalAlignment(VAlign_Center);
-			}
-
-			InventorySlotBorders[SlotIndex] = SlotBorder;
-			InventorySlotImages[SlotIndex] = SlotImage;
-			InventorySlotCountTexts[SlotIndex] = SlotCountText;
-			InventoryCooldownOverlays[SlotIndex] = CooldownOverlay;
-			InventoryCooldownTexts[SlotIndex] = CooldownText;
-		}
-
-		// 퀵슬롯 영역, 슬롯 구성
-		QuickSlotBorder = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("QuickSlotWindow"));
-		QuickSlotBorder->SetBrushColor(FLinearColor(0.02f, 0.03f, 0.05f, 0.80f));
-		if (UCanvasPanelSlot* QuickSlotCanvasSlot = RootCanvas->AddChildToCanvas(QuickSlotBorder))
-		{
-			QuickSlotCanvasSlot->SetAnchors(FAnchors(1.f, 0.f, 1.f, 0.f));
-			QuickSlotCanvasSlot->SetAlignment(FVector2D(1.f, 0.f));
-			QuickSlotCanvasSlot->SetPosition(FVector2D(-30.f, 30.f));
-			QuickSlotCanvasSlot->SetSize(FVector2D((SlotSize * QuickSlotColumnCount) + 16.f, SlotSize + 16.f));
-		}
-
-		QuickSlotGrid = WidgetTree->ConstructWidget<UUniformGridPanel>(UUniformGridPanel::StaticClass(), TEXT("QuickSlotGrid"));
-		QuickSlotBorder->SetContent(QuickSlotGrid);
-
-		QuickSlotBorders.SetNum(APFPlayerState::QuickSlotCount);
-		QuickSlotImages.SetNum(APFPlayerState::QuickSlotCount);
-		QuickSlotCountTexts.SetNum(APFPlayerState::QuickSlotCount);
-		QuickSlotKeyTexts.SetNum(APFPlayerState::QuickSlotCount);
-		QuickSlotCooldownOverlays.SetNum(APFPlayerState::QuickSlotCount);
-		QuickSlotCooldownTexts.SetNum(APFPlayerState::QuickSlotCount);
-
-		for (int32 QuickSlotIndex = 0; QuickSlotIndex < APFPlayerState::QuickSlotCount; ++QuickSlotIndex)
-		{
-			USizeBox* QuickSlotSizeBox = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass(), *FString::Printf(TEXT("QuickSlotSize_%d"), QuickSlotIndex));
-			QuickSlotSizeBox->SetWidthOverride(SlotSize);
-			QuickSlotSizeBox->SetHeightOverride(SlotSize);
-
-			UBorder* QuickBorder = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), *FString::Printf(TEXT("QuickSlot_%d"), QuickSlotIndex));
-			QuickBorder->SetBrushColor(FLinearColor(0.38f, 0.42f, 0.26f, 1.f));
-			QuickBorder->SetPadding(FMargin(InventorySlotFramePadding));
-			QuickSlotSizeBox->SetContent(QuickBorder);
-
-			UBorder* QuickInnerBorder = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), *FString::Printf(TEXT("QuickSlotInner_%d"), QuickSlotIndex));
-			QuickInnerBorder->SetBrushColor(FLinearColor(0.09f, 0.11f, 0.14f, 1.f));
-			QuickBorder->SetContent(QuickInnerBorder);
-
-			UOverlay* QuickOverlay = WidgetTree->ConstructWidget<UOverlay>(UOverlay::StaticClass(), *FString::Printf(TEXT("QuickSlotOverlay_%d"), QuickSlotIndex));
-			QuickInnerBorder->SetContent(QuickOverlay);
-
-			UImage* QuickImage = WidgetTree->ConstructWidget<UImage>(UImage::StaticClass(), *FString::Printf(TEXT("QuickSlotImage_%d"), QuickSlotIndex));
-			QuickImage->SetVisibility(ESlateVisibility::HitTestInvisible);
-			if (UOverlaySlot* QuickImageSlot = QuickOverlay->AddChildToOverlay(QuickImage))
-			{
-				QuickImageSlot->SetHorizontalAlignment(HAlign_Fill);
-				QuickImageSlot->SetVerticalAlignment(VAlign_Fill);
-				QuickImageSlot->SetPadding(FMargin(InventorySlotImagePadding));
-			}
-
-			UTextBlock* QuickCountText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), *FString::Printf(TEXT("QuickSlotCount_%d"), QuickSlotIndex));
-			QuickCountText->SetColorAndOpacity(FSlateColor(FLinearColor::White));
-			QuickCountText->SetJustification(ETextJustify::Right);
-			QuickCountText->SetVisibility(ESlateVisibility::HitTestInvisible);
-			if (UOverlaySlot* QuickCountSlot = QuickOverlay->AddChildToOverlay(QuickCountText))
-			{
-				QuickCountSlot->SetHorizontalAlignment(HAlign_Right);
-				QuickCountSlot->SetVerticalAlignment(VAlign_Bottom);
-				QuickCountSlot->SetPadding(FMargin(0.f, 0.f, 4.f, 2.f));
-			}
-
-			UPFCooldownOverlayWidget* QuickCooldownOverlay = WidgetTree->ConstructWidget<UPFCooldownOverlayWidget>(UPFCooldownOverlayWidget::StaticClass(), *FString::Printf(TEXT("QuickCooldownOverlay_%d"), QuickSlotIndex));
-			QuickCooldownOverlay->SetVisibility(ESlateVisibility::Hidden);
-			if (UOverlaySlot* QuickCooldownOverlaySlot = QuickOverlay->AddChildToOverlay(QuickCooldownOverlay))
-			{
-				QuickCooldownOverlaySlot->SetHorizontalAlignment(HAlign_Fill);
-				QuickCooldownOverlaySlot->SetVerticalAlignment(VAlign_Fill);
-			}
-
-			UTextBlock* QuickCooldownText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), *FString::Printf(TEXT("QuickCooldownText_%d"), QuickSlotIndex));
-			QuickCooldownText->SetColorAndOpacity(FSlateColor(FLinearColor::White));
-			QuickCooldownText->SetJustification(ETextJustify::Center);
-			QuickCooldownText->SetVisibility(ESlateVisibility::Hidden);
-			if (UOverlaySlot* QuickCooldownTextSlot = QuickOverlay->AddChildToOverlay(QuickCooldownText))
-			{
-				QuickCooldownTextSlot->SetHorizontalAlignment(HAlign_Center);
-				QuickCooldownTextSlot->SetVerticalAlignment(VAlign_Center);
-			}
-
-			// 퀵슬롯 단축키 표시
-			UTextBlock* QuickKeyText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), *FString::Printf(TEXT("QuickSlotKey_%d"), QuickSlotIndex));
-			QuickKeyText->SetText(FText::FromString(GetQuickSlotLabel(QuickSlotIndex)));
-			QuickKeyText->SetColorAndOpacity(FSlateColor(FLinearColor(1.f, 0.92f, 0.45f, 1.f)));
-			QuickKeyText->SetVisibility(ESlateVisibility::HitTestInvisible);
-			if (UOverlaySlot* QuickKeySlot = QuickOverlay->AddChildToOverlay(QuickKeyText))
-			{
-				QuickKeySlot->SetHorizontalAlignment(HAlign_Left);
-				QuickKeySlot->SetVerticalAlignment(VAlign_Top);
-				QuickKeySlot->SetPadding(FMargin(-6.f, -8.f, 0.f, 0.f));
-			}
-
-			if (UUniformGridSlot* QuickGridSlot = QuickSlotGrid->AddChildToUniformGrid(QuickSlotSizeBox, 0, QuickSlotIndex))
-			{
-				QuickGridSlot->SetHorizontalAlignment(HAlign_Center);
-				QuickGridSlot->SetVerticalAlignment(VAlign_Center);
-			}
-
-			QuickSlotBorders[QuickSlotIndex] = QuickBorder;
-			QuickSlotImages[QuickSlotIndex] = QuickImage;
-			QuickSlotCountTexts[QuickSlotIndex] = QuickCountText;
-			QuickSlotKeyTexts[QuickSlotIndex] = QuickKeyText;
-			QuickSlotCooldownOverlays[QuickSlotIndex] = QuickCooldownOverlay;
-			QuickSlotCooldownTexts[QuickSlotIndex] = QuickCooldownText;
-		}
-
-		// 드래그 아이콘, 수량 표시 구성
-		DragPreviewBorder = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("InventoryDragPreview"));
-		DragPreviewBorder->SetBrushColor(FLinearColor(1.f, 1.f, 1.f, 0.f));
-		DragPreviewBorder->SetVisibility(ESlateVisibility::Hidden);
-		if (UCanvasPanelSlot* DragSlot = RootCanvas->AddChildToCanvas(DragPreviewBorder))
-		{
-			DragSlot->SetAnchors(FAnchors(0.f, 0.f, 0.f, 0.f));
-			DragSlot->SetAlignment(FVector2D(0.5f, 0.5f));
-			DragSlot->SetSize(FVector2D(InventorySlotVisualSize, InventorySlotVisualSize));
-		}
-
-		UOverlay* DragPreviewOverlay = WidgetTree->ConstructWidget<UOverlay>(UOverlay::StaticClass(), TEXT("InventoryDragOverlay"));
-		DragPreviewBorder->SetContent(DragPreviewOverlay);
-
-		DragPreviewImage = WidgetTree->ConstructWidget<UImage>(UImage::StaticClass(), TEXT("InventoryDragImage"));
-		DragPreviewImage->SetVisibility(ESlateVisibility::HitTestInvisible);
-		if (UOverlaySlot* DragImageSlot = DragPreviewOverlay->AddChildToOverlay(DragPreviewImage))
-		{
-			DragImageSlot->SetHorizontalAlignment(HAlign_Fill);
-			DragImageSlot->SetVerticalAlignment(VAlign_Fill);
-		}
-
-		DragPreviewCountText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("InventoryDragCount"));
-		DragPreviewCountText->SetColorAndOpacity(FSlateColor(FLinearColor::White));
-		DragPreviewCountText->SetJustification(ETextJustify::Right);
-		DragPreviewCountText->SetVisibility(ESlateVisibility::HitTestInvisible);
-		if (UOverlaySlot* DragCountSlot = DragPreviewOverlay->AddChildToOverlay(DragPreviewCountText))
-		{
-			DragCountSlot->SetHorizontalAlignment(HAlign_Right);
-			DragCountSlot->SetVerticalAlignment(VAlign_Bottom);
-			DragCountSlot->SetPadding(FMargin(0.f, 0.f, 4.f, 2.f));
-		}
-	}
-	else
-	{
-		RootCanvas = Cast<UCanvasPanel>(WidgetTree->RootWidget);
-	}
-
-	return Super::RebuildWidget();
-}
-
 void UPFInventoryWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
 
 	SetIsFocusable(true);
 
-	// 화면 오른쪽 위에 초기 배치
-	if (UCanvasPanelSlot* WindowSlot = InventoryBorder ? Cast<UCanvasPanelSlot>(InventoryBorder->Slot) : nullptr)
+	// 인벤토리, 퀵슬롯 위젯 연결
+	RootCanvas = Cast<UCanvasPanel>(GetWidgetFromName(TEXT("InventoryRoot")));
+	InventoryBorder = Cast<UBorder>(GetWidgetFromName(TEXT("InventoryWindow")));
+	QuickSlotBorder = Cast<UBorder>(GetWidgetFromName(TEXT("QuickSlotWindow")));
+	if (UCanvasPanelSlot* QuickSlot = QuickSlotBorder ? Cast<UCanvasPanelSlot>(QuickSlotBorder->Slot) : nullptr)
 	{
-		const FVector2D ViewportSize = UWidgetLayoutLibrary::GetViewportSize(this);
-		const FVector2D WindowSize = WindowSlot->GetSize();
-		if (ViewportSize.X > WindowSize.X + 30.f)
-		{
-			WindowSlot->SetPosition(FVector2D(ViewportSize.X - WindowSize.X - 30.f, 30.f));
-		}
+		QuickSlot->SetAnchors(FAnchors(1.f, 1.f));
+		QuickSlot->SetAlignment(FVector2D(1.f, 1.f));
+		QuickSlot->SetPosition(FVector2D(-28.f, -28.f));
+		QuickSlotBorder->SetRenderTransformPivot(FVector2D(1.f, 1.f));
+	}
+	TitleBarBorder = Cast<UBorder>(GetWidgetFromName(TEXT("InventoryTitleBar")));
+	DragPreviewBorder = Cast<UBorder>(GetWidgetFromName(TEXT("InventoryDragPreview")));
+	DragPreviewImage = Cast<UImage>(GetWidgetFromName(TEXT("InventoryDragImage")));
+	DragPreviewCountText = Cast<UTextBlock>(GetWidgetFromName(TEXT("InventoryDragCount")));
+
+	InventorySlotBorders.SetNum(APFPlayerState::InventorySlotCount);
+	InventorySlotImages.SetNum(APFPlayerState::InventorySlotCount);
+	InventorySlotCountTexts.SetNum(APFPlayerState::InventorySlotCount);
+	InventoryCooldownOverlays.SetNum(APFPlayerState::InventorySlotCount);
+	InventoryCooldownTexts.SetNum(APFPlayerState::InventorySlotCount);
+	for (int32 SlotIndex = 0; SlotIndex < APFPlayerState::InventorySlotCount; ++SlotIndex)
+	{
+		InventorySlotBorders[SlotIndex] = Cast<UBorder>(GetWidgetFromName(*FString::Printf(TEXT("InventorySlot_%d"), SlotIndex)));
+		InventorySlotImages[SlotIndex] = Cast<UImage>(GetWidgetFromName(*FString::Printf(TEXT("InventorySlotImage_%d"), SlotIndex)));
+		InventorySlotCountTexts[SlotIndex] = Cast<UTextBlock>(GetWidgetFromName(*FString::Printf(TEXT("InventorySlotCount_%d"), SlotIndex)));
+		InventoryCooldownOverlays[SlotIndex] = Cast<UPFCooldownOverlayWidget>(GetWidgetFromName(*FString::Printf(TEXT("InventoryCooldownOverlay_%d"), SlotIndex)));
+		InventoryCooldownTexts[SlotIndex] = Cast<UTextBlock>(GetWidgetFromName(*FString::Printf(TEXT("InventoryCooldownText_%d"), SlotIndex)));
+	}
+
+	QuickSlotBorders.SetNum(APFPlayerState::QuickSlotCount);
+	QuickSlotImages.SetNum(APFPlayerState::QuickSlotCount);
+	QuickSlotCountTexts.SetNum(APFPlayerState::QuickSlotCount);
+	QuickSlotCooldownOverlays.SetNum(APFPlayerState::QuickSlotCount);
+	QuickSlotCooldownTexts.SetNum(APFPlayerState::QuickSlotCount);
+	for (int32 QuickSlotIndex = 0; QuickSlotIndex < APFPlayerState::QuickSlotCount; ++QuickSlotIndex)
+	{
+		QuickSlotBorders[QuickSlotIndex] = Cast<UBorder>(GetWidgetFromName(*FString::Printf(TEXT("QuickSlot_%d"), QuickSlotIndex)));
+		QuickSlotImages[QuickSlotIndex] = Cast<UImage>(GetWidgetFromName(*FString::Printf(TEXT("QuickSlotImage_%d"), QuickSlotIndex)));
+		QuickSlotCountTexts[QuickSlotIndex] = Cast<UTextBlock>(GetWidgetFromName(*FString::Printf(TEXT("QuickSlotCount_%d"), QuickSlotIndex)));
+		QuickSlotCooldownOverlays[QuickSlotIndex] = Cast<UPFCooldownOverlayWidget>(GetWidgetFromName(*FString::Printf(TEXT("QuickCooldownOverlay_%d"), QuickSlotIndex)));
+		QuickSlotCooldownTexts[QuickSlotIndex] = Cast<UTextBlock>(GetWidgetFromName(*FString::Printf(TEXT("QuickCooldownText_%d"), QuickSlotIndex)));
 	}
 
 	SetInventoryWindowVisible(false);
@@ -362,6 +110,16 @@ void UPFInventoryWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTi
 	Super::NativeTick(MyGeometry, InDeltaTime);
 	UpdateInventoryCooldowns();
 	UpdateQuickSlotCooldowns();
+	if (QuickSlotBorder)
+	{
+		const FVector2D ViewSize = MyGeometry.GetLocalSize();
+		const FVector2D SlotSize = QuickSlotBorder->GetDesiredSize();
+		if (ViewSize.X > 0.0 && ViewSize.Y > 0.0 && SlotSize.X > 0.0 && SlotSize.Y > 0.0)
+		{
+			const double Scale = FMath::Clamp(FMath::Min((ViewSize.X - 56.0) / SlotSize.X, (ViewSize.Y * .3) / SlotSize.Y), .25, 1.0);
+			QuickSlotBorder->SetRenderScale(FVector2D(Scale));
+		}
+	}
 }
 
 // 소지품 변경 이벤트 연결
@@ -438,7 +196,8 @@ void UPFInventoryWidget::UpdateInventoryWindowPosition(const FVector2D& ScreenSp
 
 		LocalPosition.X = FMath::Clamp(LocalPosition.X, 0.f, FMath::Max(0.f, CanvasSize.X - WindowSize.X));
 		LocalPosition.Y = FMath::Clamp(LocalPosition.Y, 0.f, FMath::Max(0.f, CanvasSize.Y - WindowSize.Y));
-		WindowSlot->SetPosition(LocalPosition);
+		const FVector2D AnchorPosition = CanvasSize * WindowSlot->GetAnchors().Minimum;
+		WindowSlot->SetPosition(LocalPosition - AnchorPosition + (WindowSize * WindowSlot->GetAlignment()));
 	}
 }
 
@@ -651,7 +410,6 @@ void UPFInventoryWidget::RebuildDragPreview(int32 ItemID, int32 ItemCount)
 	}
 
 	DragPreviewImage->SetBrushFromTexture(GetInventoryItemTexture(ItemID), true);
-	DragPreviewImage->SetColorAndOpacity(FLinearColor::White);
 
 	if (ItemCount > 1)
 	{

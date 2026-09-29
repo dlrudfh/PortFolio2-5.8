@@ -19,20 +19,11 @@ public:
 	void RefreshStats();
 
 protected:
-	virtual TSharedRef<SWidget> RebuildWidget() override;
-
 	virtual void NativeConstruct() override;
 
 	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
 
 private:
-	class UHorizontalBox* CreateInfoRow(
-		const FString& RowName,
-		const FText& Label,
-		class UTextBlock*& OutValueText,
-		class UButton*& OutIncreaseButton,
-		bool bCanIncrease);
-
 	class UPFAttributeSet* GetCurrentAttributeSet() const;
 
 	FString ResolveUsername() const;

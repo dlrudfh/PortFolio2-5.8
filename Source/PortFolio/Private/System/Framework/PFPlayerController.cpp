@@ -7,11 +7,13 @@
 #include "Props/PFItem.h"
 #include "UI/HUD/PFCharacterWidget.h"
 #include "UI/HUD/PFCrosshairWidget.h"
+#include "UI/HUD/PFMinimapWidget.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/InputComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "Camera/PlayerCameraManager.h"
+#include "System/Framework/PFEnemyAIController.h"
 #include "System/Framework/PFGameInstance.h"
 #include "System/Framework/PFGameMode.h"
 #include "UI/Inventory/PFInventoryWidget.h"
@@ -33,6 +35,26 @@ APFPlayerController::APFPlayerController()
 	{
 		SelfWidgetClass = SELFUI.Class;
 	}
+	static ConstructorHelpers::FClassFinder<UPFInventoryWidget> INVENTORYUI(TEXT("/Game/GameData/UI/Inventory"));
+	if (INVENTORYUI.Succeeded())
+	{
+		InventoryWidgetClass = INVENTORYUI.Class;
+	}
+	static ConstructorHelpers::FClassFinder<UPFStatWidget> STATUI(TEXT("/Game/GameData/UI/Stats"));
+	if (STATUI.Succeeded())
+	{
+		StatWidgetClass = STATUI.Class;
+	}
+	static ConstructorHelpers::FClassFinder<UPFMenuWidget> MENUUI(TEXT("/Game/GameData/UI/Menu"));
+	if (MENUUI.Succeeded())
+	{
+		MenuWidgetClass = MENUUI.Class;
+	}
+	static ConstructorHelpers::FClassFinder<UPFRespawnWidget> RESPAWNUI(TEXT("/Game/GameData/UI/Respawn"));
+	if (RESPAWNUI.Succeeded())
+	{
+		RespawnWidgetClass = RESPAWNUI.Class;
+	}
 }
 
 void APFPlayerController::PostInitializeComponents()
@@ -53,6 +75,27 @@ void APFPlayerController::OnPossess(APawn* aPawn)
 	if (aPawn && GetPawn() == aPawn)
 	{
 		Client_StopRespawnCountdown();
+		if (APFCharacter* PossessedCharacter = Cast<APFCharacter>(aPawn); PossessedCharacter && PossessedCharacter->IsDeadCharacter())
+		{
+			HandleCharacterDied(PossessedCharacter);
+		}
+	}
+}
+
+void APFPlayerController::SeamlessTravelFrom(APlayerController* OldPC)
+{
+	Super::SeamlessTravelFrom(OldPC);
+
+	// 이동 전 선택 캐릭터로 최초 생성 준비
+	if (APFPlayerState* State = GetPlayerState<APFPlayerState>())
+	{
+		InitialSpawnCharacter = State->GetCharacter();
+		bInitialSpawnRequested = true;
+	}
+	if (const APFPlayerController* OldController = Cast<APFPlayerController>(OldPC))
+	{
+		SavedViewState = OldController->SavedViewState;
+		bHasSavedViewState = OldController->bHasSavedViewState;
 	}
 }
 
@@ -71,6 +114,12 @@ void APFPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	UnbindControlledCharacter();
 	if (SelfHPBar) SelfHPBar->RemoveFromParent();
 	if (CrosshairWidget) CrosshairWidget->RemoveFromParent();
+	if (MinimapWidget) MinimapWidget->RemoveFromParent();
+	if (StatWidget)
+	{
+		StatWidget->RemoveFromParent();
+		StatWidget = nullptr;
+	}
 	if (MenuWidget)
 	{
 		MenuWidget->RemoveFromParent();
@@ -98,6 +147,7 @@ void APFPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 // 선택 캐릭터 전달
 void APFPlayerController::SetCharacter(ECHARACTER SelectedCharacter)
 {
+	if (const APFCharacter* ControlledPawn = GetControlledCharacter(); ControlledPawn && ControlledPawn->IsJumpPadFlightActive()) return;
 	if (HasAuthority())
 	{
 		if (APFPlayerState* PFPlayerState = GetPlayerState<APFPlayerState>())
@@ -138,7 +188,12 @@ void APFPlayerController::Client_StartRespawnCountdown_Implementation(double Res
 
 	if (!RespawnWidget)
 	{
-		RespawnWidget = CreateWidget<UPFRespawnWidget>(this, UPFRespawnWidget::StaticClass());
+		if (!RespawnWidgetClass)
+		{
+			PFLOG(Warning, TEXT("Respawn widget class unavailable"));
+			return;
+		}
+		RespawnWidget = CreateWidget<UPFRespawnWidget>(this, RespawnWidgetClass);
 		if (!RespawnWidget)
 		{
 			PFLOG(Warning, TEXT("Respawn widget creation failed"));
@@ -176,6 +231,7 @@ void APFPlayerController::SetupInputComponent()
 	InputComponent->BindKey(EKeys::Two, EInputEvent::IE_Pressed, this, &APFPlayerController::UseQuickSlot2);
 	InputComponent->BindKey(EKeys::Three, EInputEvent::IE_Pressed, this, &APFPlayerController::UseQuickSlot3);
 	InputComponent->BindKey(EKeys::Four, EInputEvent::IE_Pressed, this, &APFPlayerController::UseQuickSlot4);
+	InputComponent->BindKey(EKeys::M, EInputEvent::IE_Pressed, this, &APFPlayerController::ChangeTestMap);
 	// 행동, 이동 입력 연결
 	InputComponent->BindAction(TEXT("ViewChange"), EInputEvent::IE_Pressed, this, &APFPlayerController::ViewChange);
 	InputComponent->BindAction(TEXT("Jump"), EInputEvent::IE_Pressed, this, &APFPlayerController::JumpStart);
@@ -222,6 +278,7 @@ void APFPlayerController::BeginPlay()
 	{
 		return;
 	}
+	GI->ApplyMenuVolume();
 	GI->CreateTitle();
 
 	UWorld* World = GetWorld();
@@ -320,11 +377,19 @@ void APFPlayerController::CreateUI()
 	{
 		return;
 	}
+	if (!MinimapWidget)
+	{
+		MinimapWidget = CreateWidget<UPFMinimapWidget>(this, UPFMinimapWidget::StaticClass());
+		if (MinimapWidget)
+		{
+			MinimapWidget->AddToPlayerScreen(etoi(PLAYERSTAT) - 2);
+		}
+	}
 
 	// 인벤토리, 퀵슬롯 UI 생성
-	if (!InventoryWidget)
+	if (!InventoryWidget && InventoryWidgetClass)
 	{
-		InventoryWidget = CreateWidget<UPFInventoryWidget>(this, UPFInventoryWidget::StaticClass());
+		InventoryWidget = CreateWidget<UPFInventoryWidget>(this, InventoryWidgetClass);
 		if (InventoryWidget)
 		{
 			PFLOG(Warning, TEXT("Inventory Widget Created"));
@@ -340,9 +405,9 @@ void APFPlayerController::CreateUI()
 	}
 
 	// 스탯 창 생성
-	if (!StatWidget)
+	if (!StatWidget && StatWidgetClass)
 	{
-		StatWidget = CreateWidget<UPFStatWidget>(this, UPFStatWidget::StaticClass());
+		StatWidget = CreateWidget<UPFStatWidget>(this, StatWidgetClass);
 		if (StatWidget)
 		{
 			StatWidget->AddToViewport(etoi(PLAYERSTAT) + 2);
@@ -370,9 +435,9 @@ void APFPlayerController::OpenMenu()
 		UpdateWindowInputMode();
 		return;
 	}
-	if (!MenuWidget)
+	if (!MenuWidget && MenuWidgetClass)
 	{
-		MenuWidget = CreateWidget<UPFMenuWidget>(this, UPFMenuWidget::StaticClass());
+		MenuWidget = CreateWidget<UPFMenuWidget>(this, MenuWidgetClass);
 	}
 	if (!MenuWidget)
 	{
@@ -392,7 +457,7 @@ void APFPlayerController::OpenMenu()
 		ControlledPawn->ConsumeMovementInputVector();
 	}
 	UpdateCharacterControl();
-	MenuWidget->AddToPlayerScreen(etoi(PLAYERSTAT) + 10);
+	MenuWidget->AddToViewport(etoi(PLAYERSTAT) + 10);
 	UpdateWindowInputMode();
 }
 
@@ -463,6 +528,7 @@ void APFPlayerController::ToggleInventory()
 // 스탯 창 표시 전환
 void APFPlayerController::ToggleStats()
 {
+	if (const APFCharacter* ControlledPawn = GetControlledCharacter(); ControlledPawn && ControlledPawn->IsJumpPadFlightActive()) return;
 	if (!IsLocalController())
 	{
 		return;
@@ -681,6 +747,33 @@ bool APFPlayerController::IsCurrentCharacter(const APFCharacter* ControlledPawn)
 		&& ControlledPawn->GetController() == this && !ControlledPawn->IsDeadCharacter();
 }
 
+// 점프대 비행 중 일반 행동 차단
+bool APFPlayerController::CanUseGameplayInput(const APFCharacter* ControlledPawn) const
+{
+	return IsCurrentCharacter(ControlledPawn) && !ControlledPawn->IsJumpPadFlightActive();
+}
+
+// 보류된 이동, 점프 입력 해제
+void APFPlayerController::ResetGameplayInput()
+{
+	JumpButtonHeld = false;
+	UpDownDir = IDLE;
+	LeftRightDir = IDLE;
+	LastMovementDirection = IDLE;
+	RotationInput = FRotator::ZeroRotator;
+	if (APFCharacter* ControlledPawn = GetControlledCharacter())
+	{
+		ControlledPawn->StopJumping();
+		ControlledPawn->ConsumeMovementInputVector();
+		ControlledPawn->SetMovementInputDirection(IDLE);
+		if (ControlledPawn->IsJumpPadFlightActive() && StatWidget)
+		{
+			StatWidget->SetStatWindowVisible(false);
+			UpdateWindowInputMode();
+		}
+	}
+}
+
 void APFPlayerController::OnUnPossess()
 {
 	UnbindControlledCharacter();
@@ -790,7 +883,7 @@ void APFPlayerController::HandleCharacterDied(APFCharacter* ControlledPawn)
 // 점프 입력 유지 시 재점프
 void APFPlayerController::HandleCharacterLanded(APFCharacter* ControlledPawn)
 {
-	if (IsLocalController() && JumpButtonHeld && IsCurrentCharacter(ControlledPawn))
+	if (IsLocalController() && JumpButtonHeld && CanUseGameplayInput(ControlledPawn))
 	{
 		ControlledPawn->ActivateJumpAbility();
 	}
@@ -844,7 +937,7 @@ void APFPlayerController::BindCharacterHUD()
 void APFPlayerController::UpdateCharacterControl()
 {
 	APFCharacter* ControlledPawn = GetControlledCharacter();
-	if (!IsCurrentCharacter(ControlledPawn))
+	if (!CanUseGameplayInput(ControlledPawn))
 	{
 		return;
 	}
@@ -873,9 +966,9 @@ void APFPlayerController::UpdateCharacterControl()
 // 점프 입력 시작
 void APFPlayerController::JumpStart()
 {
-	JumpButtonHeld = true;
-	if (APFCharacter* ControlledPawn = GetControlledCharacter(); IsCurrentCharacter(ControlledPawn))
+	if (APFCharacter* ControlledPawn = GetControlledCharacter(); CanUseGameplayInput(ControlledPawn))
 	{
+		JumpButtonHeld = true;
 		ControlledPawn->ActivateJumpAbility();
 	}
 }
@@ -891,7 +984,7 @@ void APFPlayerController::JumpEnd()
 void APFPlayerController::UpDown(float Value)
 {
 	APFCharacter* ControlledPawn = GetControlledCharacter();
-	if (!IsCurrentCharacter(ControlledPawn) || ControlledPawn->IsMovementBlocked())
+	if (!CanUseGameplayInput(ControlledPawn) || ControlledPawn->IsMovementBlocked())
 	{
 		UpDownDir = IDLE;
 		return;
@@ -904,7 +997,7 @@ void APFPlayerController::UpDown(float Value)
 void APFPlayerController::LeftRight(float Value)
 {
 	APFCharacter* ControlledPawn = GetControlledCharacter();
-	if (!IsCurrentCharacter(ControlledPawn) || ControlledPawn->IsMovementBlocked())
+	if (!CanUseGameplayInput(ControlledPawn) || ControlledPawn->IsMovementBlocked())
 	{
 		LeftRightDir = IDLE;
 		return;
@@ -917,25 +1010,29 @@ void APFPlayerController::LeftRight(float Value)
 void APFPlayerController::LookUp(float Value)
 {
 	APFCharacter* ControlledPawn = GetControlledCharacter();
-	if (IsCurrentCharacter(ControlledPawn) && ControlledPawn->GetCurrentControlMode() != TOPVIEW)
+	if (CanUseGameplayInput(ControlledPawn) && ControlledPawn->GetCurrentControlMode() != TOPVIEW)
 	{
-		AddPitchInput(Value * ControlledPawn->GetLookUpSpeed());
+		const UPFGameInstance* GI = GetGameInstance<UPFGameInstance>();
+		const float Sensitivity = GI ? GI->GetCameraSensitivity() / 100.f : 1.f;
+		AddPitchInput(Value * ControlledPawn->GetLookUpSpeed() * Sensitivity);
 	}
 }
 
 // 시선 좌우 회전
 void APFPlayerController::Turn(float Value)
 {
-	if (APFCharacter* ControlledPawn = GetControlledCharacter(); IsCurrentCharacter(ControlledPawn))
+	if (APFCharacter* ControlledPawn = GetControlledCharacter(); CanUseGameplayInput(ControlledPawn))
 	{
-		AddYawInput(Value * ControlledPawn->GetTurnSpeed());
+		const UPFGameInstance* GI = GetGameInstance<UPFGameInstance>();
+		const float Sensitivity = GI ? GI->GetCameraSensitivity() / 100.f : 1.f;
+		AddYawInput(Value * ControlledPawn->GetTurnSpeed() * Sensitivity);
 	}
 }
 
 // 공격 입력 시작
 void APFPlayerController::AttackStart()
 {
-	if (APFCharacter* ControlledPawn = GetControlledCharacter(); IsCurrentCharacter(ControlledPawn))
+	if (APFCharacter* ControlledPawn = GetControlledCharacter(); CanUseGameplayInput(ControlledPawn))
 	{
 		Server_UpdateAimPoint(ControlledPawn, CalculateAimPoint());
 		ControlledPawn->SetAttackInputPressed(true);
@@ -951,7 +1048,7 @@ void APFPlayerController::AttackEnd()
 // 궁극기 입력
 void APFPlayerController::Ultimate()
 {
-	if (APFCharacter* ControlledPawn = GetControlledCharacter(); IsCurrentCharacter(ControlledPawn))
+	if (APFCharacter* ControlledPawn = GetControlledCharacter(); CanUseGameplayInput(ControlledPawn))
 	{
 		ControlledPawn->ActivateUltimateAbility();
 	}
@@ -960,32 +1057,29 @@ void APFPlayerController::Ultimate()
 // 질주 입력
 void APFPlayerController::Sprint()
 {
-	Server_Sprint(GetControlledCharacter());
+	if (CanUseGameplayInput(GetControlledCharacter())) Server_Sprint(GetControlledCharacter());
 }
 
 // 시점 고정 입력
 void APFPlayerController::ViewpointFix()
 {
-	Server_ViewpointFix(GetControlledCharacter());
+	if (CanUseGameplayInput(GetControlledCharacter())) Server_ViewpointFix(GetControlledCharacter());
 }
 
 // 카메라 시점 전환
 void APFPlayerController::ViewChange()
 {
 	APFCharacter* ControlledPawn = GetControlledCharacter();
-	if (!IsCurrentCharacter(ControlledPawn)) return;
+	if (!CanUseGameplayInput(ControlledPawn) || ControlledPawn->IsLevelStartActive()) return;
 	switch (ControlledPawn->GetCurrentControlMode())
 	{
 	case TOPVIEW:
-		SetControlRotation(ControlledPawn->GetCameraSpringArm()->GetRelativeRotation());
 		Server_SetControlMode(ControlledPawn, TPS);
 		break;
 	case TPS:
-		SetControlRotation(ControlledPawn->GetActorRotation());
 		Server_SetControlMode(ControlledPawn, FPS);
 		break;
 	case FPS:
-		SetControlRotation(ControlledPawn->GetActorRotation());
 		Server_SetControlMode(ControlledPawn, TOPVIEW);
 		break;
 	default:
@@ -996,31 +1090,31 @@ void APFPlayerController::ViewChange()
 // 서버 이동 입력 반영
 void APFPlayerController::Server_SetDir_Implementation(APFCharacter* ControlledPawn, EPFDirection NewDirection)
 {
-	if (IsCurrentCharacter(ControlledPawn)) ControlledPawn->SetMovementInputDirection(NewDirection);
+	if (CanUseGameplayInput(ControlledPawn)) ControlledPawn->SetMovementInputDirection(NewDirection);
 }
 
 // 서버 카메라 모드 반영
 void APFPlayerController::Server_SetControlMode_Implementation(APFCharacter* ControlledPawn, ECONTROLMODE NewControlMode)
 {
-	if (IsCurrentCharacter(ControlledPawn)) ControlledPawn->SetControlMode(NewControlMode);
+	if (CanUseGameplayInput(ControlledPawn) && !ControlledPawn->IsLevelStartActive()) ControlledPawn->SetControlMode(NewControlMode);
 }
 
 // 서버 질주 전환
 void APFPlayerController::Server_Sprint_Implementation(APFCharacter* ControlledPawn)
 {
-	if (IsCurrentCharacter(ControlledPawn)) ControlledPawn->ToggleSprint();
+	if (CanUseGameplayInput(ControlledPawn)) ControlledPawn->ToggleSprint();
 }
 
 // 서버 시점 고정 전환
 void APFPlayerController::Server_ViewpointFix_Implementation(APFCharacter* ControlledPawn)
 {
-	if (IsCurrentCharacter(ControlledPawn)) ControlledPawn->ToggleViewpointFixed();
+	if (CanUseGameplayInput(ControlledPawn)) ControlledPawn->ToggleViewpointFixed();
 }
 
 // 서버 조준점 반영
 void APFPlayerController::Server_UpdateAimPoint_Implementation(APFCharacter* ControlledPawn, FVector NewAimPoint)
 {
-	if (IsCurrentCharacter(ControlledPawn) && !NewAimPoint.ContainsNaN())
+	if (CanUseGameplayInput(ControlledPawn) && !NewAimPoint.ContainsNaN())
 	{
 		AimPoint = NewAimPoint;
 	}
@@ -1028,7 +1122,7 @@ void APFPlayerController::Server_UpdateAimPoint_Implementation(APFCharacter* Con
 
 bool APFPlayerController::TryGetCombatAim(FVector& OutAimPoint)
 {
-	if (!IsCurrentCharacter(GetControlledCharacter())) return false;
+	if (!CanUseGameplayInput(GetControlledCharacter())) return false;
 	OutAimPoint = AimPoint;
 	return true;
 }
@@ -1047,13 +1141,17 @@ void APFPlayerController::SetChest(APFChest* Chest)
 // 상호작용 요청
 void APFPlayerController::Interaction()
 {
-	Server_Interaction(GetControlledCharacter());
+	if (APFCharacter* ControlledPawn = GetControlledCharacter(); CanUseGameplayInput(ControlledPawn) && !ControlledPawn->IsLevelStartActive())
+	{
+		Server_Interaction(ControlledPawn);
+	}
 }
 
 // 서버 상자 열기
 void APFPlayerController::Server_Interaction_Implementation(APFCharacter* ControlledPawn)
 {
-	if (IsCurrentCharacter(ControlledPawn) && NearestChest.IsValid() && IsValid(NearestChest->Trigger)
+	if (CanUseGameplayInput(ControlledPawn) && !ControlledPawn->IsLevelStartActive()
+		&& NearestChest.IsValid() && IsValid(NearestChest->Trigger)
 		&& NearestChest->Trigger->IsOverlappingActor(ControlledPawn))
 	{
 		NearestChest->ChestOpen();
@@ -1063,13 +1161,17 @@ void APFPlayerController::Server_Interaction_Implementation(APFCharacter* Contro
 // 캐릭터 교체 요청
 void APFPlayerController::ChangeCharacter()
 {
-	Server_ChangeCharacter(GetControlledCharacter());
+	if (APFCharacter* ControlledPawn = GetControlledCharacter(); CanUseGameplayInput(ControlledPawn) && !ControlledPawn->IsLevelStartActive())
+	{
+		Server_ChangeCharacter(ControlledPawn);
+	}
 }
 
 // 서버 캐릭터 교체
 void APFPlayerController::Server_ChangeCharacter_Implementation(APFCharacter* ControlledPawn)
 {
-	if (!IsCurrentCharacter(ControlledPawn) || ControlledPawn->GetCharacterMovement()->IsFalling() || ControlledPawn->HasAirborneTag()
+	if (!CanUseGameplayInput(ControlledPawn) || ControlledPawn->IsLevelStartActive()
+		|| ControlledPawn->GetCharacterMovement()->IsFalling() || ControlledPawn->HasAirborneTag()
 		|| FPackageName::GetShortName(GetWorld()->GetMapName()).Contains(TEXT("Title")))
 	{
 		return;
@@ -1080,16 +1182,39 @@ void APFPlayerController::Server_ChangeCharacter_Implementation(APFCharacter* Co
 	}
 }
 
+// 테스트 맵 전환 요청
+void APFPlayerController::ChangeTestMap()
+{
+	APFCharacter* ControlledPawn = GetControlledCharacter();
+	if (IsLocalController() && CanUseGameplayInput(ControlledPawn) && !ControlledPawn->IsLevelStartActive())
+	{
+		Server_ChangeTestMap(ControlledPawn);
+	}
+}
+
+// 서버에서 현재 캐릭터의 맵 전환 요청 처리
+void APFPlayerController::Server_ChangeTestMap_Implementation(APFCharacter* ControlledPawn)
+{
+	if (!CanUseGameplayInput(ControlledPawn) || ControlledPawn->IsLevelStartActive())
+	{
+		return;
+	}
+	if (APFGameMode* GameMode = GetWorld()->GetAuthGameMode<APFGameMode>())
+	{
+		GameMode->ChangeTestMap();
+	}
+}
+
 // 트윈블라스트 적 생성 요청
 void APFPlayerController::SpawnTestTwinblastEnemy()
 {
-	Server_SpawnTestEnemy(GetControlledCharacter(), true);
+	if (CanUseGameplayInput(GetControlledCharacter())) Server_SpawnTestEnemy(GetControlledCharacter(), true);
 }
 
 // 광 적 생성 요청
 void APFPlayerController::SpawnTestKwangEnemy()
 {
-	Server_SpawnTestEnemy(GetControlledCharacter(), false);
+	if (CanUseGameplayInput(GetControlledCharacter())) Server_SpawnTestEnemy(GetControlledCharacter(), false);
 }
 
 // 교체 전 카메라 상태 보관
@@ -1126,7 +1251,7 @@ void APFPlayerController::Client_RestoreCharacterState_Implementation(APFCharact
 void APFPlayerController::Server_SpawnTestEnemy_Implementation(APFCharacter* ControlledPawn, bool bSpawnTwinblast)
 {
 	UWorld* World = GetWorld();
-	if (!World || !IsCurrentCharacter(ControlledPawn))
+	if (!World || !CanUseGameplayInput(ControlledPawn))
 	{
 		return;
 	}
@@ -1181,10 +1306,13 @@ void APFPlayerController::Server_SpawnTestEnemy_Implementation(APFCharacter* Con
 	SpawnParameters.Instigator = ControlledPawn;
 	SpawnParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButDontSpawnIfColliding;
 
-	// 배치 가능한 위치를 찾아 생성
+	// 공통 탐색 반경 내 위치를 찾아 생성
+	const FVector SpawnCenter = ControlledPawn->GetActorLocation();
+	const float SpawnRadius = GetDefault<APFEnemyAIController>()->GetTargetSearchRadius();
 	int32 RemainingAttempts = 30;
 	FTransform SpawnTransform;
-	while (APFGameMode::FindSpawnTransform(World, EnemyCapsule, QueryParams, RemainingAttempts, false, SpawnTransform))
+	while (APFGameMode::FindSpawnTransform(World, EnemyCapsule, QueryParams, RemainingAttempts, false,
+		SpawnTransform, &SpawnCenter, SpawnRadius))
 	{
 		const FVector CandidateFeet = SpawnTransform.GetLocation() - FVector(0.f, 0.f, EnemyCapsule->GetScaledCapsuleHalfHeight());
 		if (!IsOnSpawnNavMesh(CandidateFeet, EnemyMovement, EnemyCapsule))
@@ -1196,7 +1324,8 @@ void APFPlayerController::Server_SpawnTestEnemy_Implementation(APFCharacter* Con
 		{
 			// 충돌 보정된 실제 위치 확인
 			const UCharacterMovementComponent* SpawnedMovement = SpawnedEnemy->GetCharacterMovement();
-			if (!SpawnedMovement || !IsOnSpawnNavMesh(SpawnedMovement->GetActorFeetLocation(),
+			if (FVector::DistSquared2D(SpawnedEnemy->GetActorLocation(), SpawnCenter) > FMath::Square(SpawnRadius)
+				|| !SpawnedMovement || !IsOnSpawnNavMesh(SpawnedMovement->GetActorFeetLocation(),
 				SpawnedMovement, SpawnedEnemy->GetCapsuleComponent()))
 			{
 				SpawnedEnemy->Destroy();
@@ -1213,7 +1342,7 @@ void APFPlayerController::Server_SpawnTestEnemy_Implementation(APFCharacter* Con
 		}
 	}
 
-	PFLOG(Warning, TEXT("Test enemy spawn failed: no spawnable NavMesh ground found inside SM_Cube bounds"));
+	PFLOG(Warning, TEXT("Test enemy spawn failed: no spawnable NavMesh ground found within %.0f cm"), SpawnRadius);
 }
 
 // 빙의 전에 발생한 접촉 상태 반영

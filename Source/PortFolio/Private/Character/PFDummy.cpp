@@ -4,11 +4,13 @@
 #include "System/Framework/PFGameInstance.h"
 #include "Animation/PFAnimInst_Kwang.h"
 #include "Animation/PFAnimInst_TwinBlast.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "UObject/ConstructorHelpers.h"
 
 APFDummy::APFDummy() : DummyType(CHARACTER_END), PFAnim(nullptr)
 {
 	PrimaryActorTick.bCanEverTick = false;
+	GetCharacterMovement()->GravityScale = 0.f;
 
 	GetMesh()->SetRelativeLocation(FVector(0.f, 0.f, -90.f));
 }

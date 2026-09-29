@@ -6,7 +6,7 @@
 #include "GAS/Attributes/PFAttributeSet.h"
 #include "PFCharacterWidget.generated.h"
 
-// 체력, 마나 표시 위젯
+// 체력, 마나, 이름 표시 위젯
 UCLASS()
 class PORTFOLIO_API UPFCharacterWidget : public UUserWidget
 {
@@ -15,10 +15,8 @@ class PORTFOLIO_API UPFCharacterWidget : public UUserWidget
 public:
 	void BindAttributeSet(class UPFAttributeSet* NewAttributeSet, bool IsLocal);
 	void SetDisplayUsername(const FString& NewUsername);
-	virtual void ReleaseSlateResources(bool bReleaseChildren) override;
 
 protected:
-	virtual TSharedRef<SWidget> RebuildWidget() override;
 	virtual void NativeConstruct() override;
 	void UpdateAllWidget();
 	void UpdateHPWidget();
@@ -29,8 +27,10 @@ private:
 	TWeakObjectPtr<UPFAttributeSet> CurrentAttributeSet;
 
 	FString DisplayUsername;
-	TSharedPtr<class SBox> UsernameBox;
-	TSharedPtr<class STextBlock> UsernameText;
+	UPROPERTY(Transient)
+	class USizeBox* UsernameBox = nullptr;
+	UPROPERTY(Transient)
+	class UTextBlock* UsernameText = nullptr;
 
 	UPROPERTY()
 	class UProgressBar* HPProgressBar;

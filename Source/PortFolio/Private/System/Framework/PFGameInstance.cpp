@@ -9,6 +9,20 @@
 #include "Engine/NetDriver.h"
 #include "Engine/World.h"
 #include "GameDelegates.h"
+#include "AudioDevice.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Misc/Guid.h"
+#include "Interfaces/OnlineIdentityInterface.h"
+#include "OnlineSubsystemNames.h"
+#include "UObject/UObjectGlobals.h"
+
+namespace
+{
+	const FName HostHeartbeatKey(TEXT("PFHostHeartbeat"));
+	constexpr double HostHeartbeatInterval = 5.0;
+	constexpr double HostHeartbeatTimeout = 20.0;
+	constexpr double HostValidationTimeout = 60.0;
+}
 
 UPFGameInstance::UPFGameInstance() : CreateSessionCompleteDelegate(FOnCreateSessionCompleteDelegate::CreateUObject(this, &UPFGameInstance::OnCreateSessionComplete)),
 FindSessionsCompleteDelegate(FOnFindSessionsCompleteDelegate::CreateUObject(this, &UPFGameInstance::OnFindSessionsComplete)),
@@ -30,14 +44,44 @@ JoinSessionCompleteDelegate(FOnJoinSessionCompleteDelegate::CreateUObject(this, 
 void UPFGameInstance::Init()
 {
 	Super::Init();
+	if (GConfig)
+	{
+		GConfig->GetFloat(TEXT("PortFolio.MenuSettings"), TEXT("Volume"), MenuVolume, GGameUserSettingsIni);
+		GConfig->GetFloat(TEXT("PortFolio.MenuSettings"), TEXT("CameraSensitivity"), CameraSensitivity, GGameUserSettingsIni);
+		MenuVolume = FMath::IsFinite(MenuVolume) ? FMath::Clamp(MenuVolume, 0.f, 100.f) : 100.f;
+		CameraSensitivity = FMath::IsFinite(CameraSensitivity) ? FMath::Clamp(CameraSensitivity, 1.f, 100.f) : 50.f;
+	}
 	DisconnectHandle = FGameDelegates::Get().GetHandleDisconnectDelegate()
 		.AddUObject(this, &UPFGameInstance::HandleSessionDisconnect);
+	if (GEngine)
+	{
+		NetworkFailureHandle = GEngine->OnNetworkFailure().AddUObject(this, &UPFGameInstance::HandleNetworkFailure);
+		TravelFailureHandle = GEngine->OnTravelFailure().AddUObject(this, &UPFGameInstance::HandleTravelFailure);
+	}
+	MapLoadedHandle = FCoreUObjectDelegates::PostLoadMapWithWorld.AddUObject(this, &UPFGameInstance::HandleMapLoaded);
+	SessionRecoveryTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+		FTickerDelegate::CreateUObject(this, &UPFGameInstance::TickSessionRecovery), 1.f);
 
     // 온라인 세션 인터페이스 연결
     IOnlineSubsystem* OnlineSubsystem = IOnlineSubsystem::Get();
     if (OnlineSubsystem)
     {
         OnlineSessionInterface = OnlineSubsystem->GetSessionInterface();
+        bSteamSessions = OnlineSubsystem->GetSubsystemName() == STEAM_SUBSYSTEM;
+		if (OnlineSessionInterface.IsValid())
+		{
+			HostHeartbeatCompleteHandle = OnlineSessionInterface->AddOnUpdateSessionCompleteDelegate_Handle(
+				FOnUpdateSessionCompleteDelegate::CreateUObject(this, &UPFGameInstance::OnHostHeartbeatComplete));
+		}
+		if (bSteamSessions)
+		{
+			if (UClass* DriverClass = LoadClass<UNetDriver>(nullptr, TEXT("/Script/SteamSockets.SteamSocketsNetDriver")))
+			{
+				UNetDriver* DriverDefaults = DriverClass->GetDefaultObject<UNetDriver>();
+				DriverDefaults->ConnectionTimeout = 20.f;
+				DriverDefaults->InitialConnectTimeout = 60.f;
+			}
+		}
 
         if (GEngine)
         {
@@ -46,15 +90,47 @@ void UPFGameInstance::Init()
                     *OnlineSubsystem->GetSubsystemName().ToString()));
         }
     }
+
+	RecoverPreviousLobby();
+	if (OnlineSessionInterface.IsValid() && OnlineSessionInterface->GetNamedSession(NAME_GameSession))
+	{
+		BeginSessionCleanup();
+	}
 }
 
 void UPFGameInstance::Shutdown()
 {
+	SaveMenuSettings();
+	// 메뉴 테스트용 로그
+	PFLOG(Warning, TEXT("[MenuTest] Shutdown GI=%s World=%s ExitRequested=%d ExitDispatched=%d"),
+		*GetNameSafe(this), *GetNameSafe(GetWorld()), bExitRequested, bExitDispatched);
 	bShuttingDown = true;
 	PendingSessionRequest = ESessionRequest::None;
 	ClearSessionDelegates();
 	FGameDelegates::Get().GetHandleDisconnectDelegate().Remove(DisconnectHandle);
 	DisconnectHandle.Reset();
+	if (GEngine)
+	{
+		GEngine->OnNetworkFailure().Remove(NetworkFailureHandle);
+		GEngine->OnTravelFailure().Remove(TravelFailureHandle);
+	}
+	FCoreUObjectDelegates::PostLoadMapWithWorld.Remove(MapLoadedHandle);
+	FTSTicker::RemoveTicker(SessionRecoveryTickerHandle);
+	SessionRecoveryTickerHandle.Reset();
+
+	if (OnlineSessionInterface.IsValid())
+	{
+		OnlineSessionInterface->ClearOnUpdateSessionCompleteDelegate_Handle(HostHeartbeatCompleteHandle);
+		HostHeartbeatCompleteHandle.Reset();
+		// 진행 중인 세션 작업과 종료 요청의 충돌 방지
+		if (!bHostHeartbeatPending && OnlineSessionInterface->GetNamedSession(NAME_GameSession)
+			&& SessionOperation != ESessionOperation::Creating
+			&& SessionOperation != ESessionOperation::Joining
+			&& SessionOperation != ESessionOperation::Destroying)
+		{
+			OnlineSessionInterface->DestroySession(NAME_GameSession);
+		}
+	}
 	FTSTicker::RemoveTicker(ExitTickerHandle);
 	ExitTickerHandle.Reset();
 	SessionSearch.Reset();
@@ -62,17 +138,65 @@ void UPFGameInstance::Shutdown()
 	Super::Shutdown();
 }
 
+// 전체 음량 갱신
+void UPFGameInstance::SetMenuVolume(float Value)
+{
+	const float NewVolume = FMath::RoundToFloat(FMath::Clamp(Value, 0.f, 100.f));
+	bMenuSettingsDirty |= MenuVolume != NewVolume;
+	MenuVolume = NewVolume;
+	ApplyMenuVolume();
+}
+
+// 카메라 감도 갱신
+void UPFGameInstance::SetCameraSensitivity(float Value)
+{
+	const float NewSensitivity = FMath::RoundToFloat(FMath::Clamp(Value, 1.f, 100.f));
+	bMenuSettingsDirty |= CameraSensitivity != NewSensitivity;
+	CameraSensitivity = NewSensitivity;
+}
+
+// 현재 월드의 전체 음량 적용
+void UPFGameInstance::ApplyMenuVolume()
+{
+	if (UWorld* World = GetWorld())
+	{
+		if (FAudioDeviceHandle AudioDevice = World->GetAudioDevice())
+		{
+			AudioDevice->SetTransientPrimaryVolume(MenuVolume / 100.f);
+		}
+	}
+}
+
+// 로컬 설정 파일 저장
+void UPFGameInstance::SaveMenuSettings()
+{
+	if (!GConfig || !bMenuSettingsDirty) return;
+	GConfig->SetFloat(TEXT("PortFolio.MenuSettings"), TEXT("Volume"), MenuVolume, GGameUserSettingsIni);
+	GConfig->SetFloat(TEXT("PortFolio.MenuSettings"), TEXT("CameraSensitivity"), CameraSensitivity, GGameUserSettingsIni);
+	GConfig->Flush(false, GGameUserSettingsIni);
+	bMenuSettingsDirty = false;
+}
+
 void UPFGameInstance::ReturnToMainMenu()
 {
+	// 메뉴 테스트용 로그
+	PFLOG(Warning, TEXT("[MenuTest] ReturnToMainMenu entered GI=%s World=%s ShuttingDown=%d ExitRequested=%d ReturningToTitle=%d Operation=%d"),
+		*GetNameSafe(this), *GetNameSafe(GetWorld()), bShuttingDown, bExitRequested, bReturningToTitle, static_cast<int32>(SessionOperation));
 	if (bShuttingDown || bExitRequested || bReturningToTitle || !GetWorld())
 	{
+		// 메뉴 테스트용 로그
+		PFLOG(Warning, TEXT("[MenuTest] ReturnToMainMenu rejected by guard"));
 		return;
 	}
 	bReturningToTitle = true;
 	PendingSessionRequest = ESessionRequest::None;
 	bRestoreSessionInput = false;
 	BeginSessionCleanup();
+	// 메뉴 테스트용 로그
+	PFLOG(Warning, TEXT("[MenuTest] Cleanup call returned, calling engine ReturnToMainMenu"));
 	Super::ReturnToMainMenu();
+	// 메뉴 테스트용 로그
+	PFLOG(Warning, TEXT("[MenuTest] Engine ReturnToMainMenu call returned"));
 }
 
 // 타이틀 UI 생성, 입력 설정
@@ -87,6 +211,9 @@ void UPFGameInstance::CreateTitle()
 		return;
 	}
 	bReturningToTitle = false;
+	// 메뉴 테스트용 로그
+	PFLOG(Warning, TEXT("[MenuTest] Title map reached GI=%s World=%s CleanupRequested=%d Operation=%d"),
+		*GetNameSafe(this), *GetNameSafe(World), bCleanupRequested, static_cast<int32>(SessionOperation));
 	if (IsValid(TitleWidget))
 	{
 		if (TitleWidget->GetWorld() == World && TitleWidget->IsInViewport())
@@ -147,6 +274,14 @@ void UPFGameInstance::CreateGameSession(const FString& SessionName)
 // 기존 세션 정리 후 요청 예약
 bool UPFGameInstance::RequestSession(ESessionRequest Request, const FString& SessionName)
 {
+	RecoverPreviousLobby();
+	if (!bStartupLobbyRecovered || bCleanupTimedOut)
+	{
+		SessionNotice = NSLOCTEXT("PFSession", "RecoveryPending", "Steam session recovery is still in progress. Try again shortly, or restart the game.");
+		bRestoreSessionInput = true;
+		UpdateSessionUI();
+		return false;
+	}
 	if (bShuttingDown || bExitRequested || bCleanupRequested || bReturningToTitle
 		|| SessionOperation != ESessionOperation::Idle)
 	{
@@ -157,11 +292,14 @@ bool UPFGameInstance::RequestSession(ESessionRequest Request, const FString& Ses
 	if (!OnlineSessionInterface.IsValid() || !LocalPlayer || !LocalPlayer->GetPreferredUniqueNetId().IsValid())
 	{
 		PFLOG(Warning, TEXT("Session interface or local player is not ready"));
+		SessionNotice = NSLOCTEXT("PFSession", "NotReady", "Online services are not ready. Check your Steam connection and try again.");
 		bRestoreSessionInput = true;
 		UpdateSessionUI();
 		return false;
 	}
 
+	SessionNotice = FText::GetEmpty();
+	RejectedLobbyIds.Empty();
 	InputSessionName = SessionName;
 	PendingSessionRequest = Request;
 	bRestoreSessionInput = false;
@@ -210,8 +348,10 @@ bool UPFGameInstance::StartPendingSessionRequest()
 		SessionSettings.bUseLobbiesIfAvailable = true;
 		SessionSettings.Set(FName("SessionName"), InputSessionName, EOnlineDataAdvertisementType::ViaOnlineService);
 		SessionSettings.Set(FName("MapName"), FString("/Game/ThirdPerson/Maps/Map2"), EOnlineDataAdvertisementType::ViaOnlineService);
+		SessionSettings.Set(HostHeartbeatKey, FGuid::NewGuid().ToString(), EOnlineDataAdvertisementType::ViaOnlineService);
 
 		SessionOperation = ESessionOperation::Creating;
+		SessionOperationStartedAt = FPlatformTime::Seconds();
 		CreateSessionCompleteHandle = OnlineSessionInterface->AddOnCreateSessionCompleteDelegate_Handle(CreateSessionCompleteDelegate);
 		UpdateSessionUI();
 		const bool bStarted = OnlineSessionInterface->CreateSession(*LocalPlayer->GetPreferredUniqueNetId(), NAME_GameSession, SessionSettings);
@@ -227,6 +367,7 @@ bool UPFGameInstance::StartPendingSessionRequest()
 	SessionSearch->bIsLanQuery = false;
 	SessionSearch->QuerySettings.Set(SEARCH_LOBBIES, true, EOnlineComparisonOp::Equals);
 	SessionOperation = ESessionOperation::Finding;
+	SessionOperationStartedAt = FPlatformTime::Seconds();
 	FindSessionsCompleteHandle = OnlineSessionInterface->AddOnFindSessionsCompleteDelegate_Handle(FindSessionsCompleteDelegate);
 	UpdateSessionUI();
 	const bool bStarted = OnlineSessionInterface->FindSessions(*LocalPlayer->GetPreferredUniqueNetId(), SessionSearch.ToSharedRef());
@@ -262,7 +403,12 @@ void UPFGameInstance::OnCreateSessionComplete(FName SessionName, bool IsSucceede
 		return;
 	}
 
+	if (const FNamedOnlineSession* Session = OnlineSessionInterface->GetNamedSession(NAME_GameSession))
+	{
+		SaveRecoveryLobby(Session->GetSessionIdStr());
+	}
 	SessionOperation = ESessionOperation::Traveling;
+	SessionOperationStartedAt = FPlatformTime::Seconds();
 	UpdateSessionUI();
 	if (!World->ServerTravel(TEXT("/Game/ThirdPerson/Maps/Map2?listen")))
 	{
@@ -304,7 +450,16 @@ void UPFGameInstance::StartGame()
 		return;
 	}
 
+	const FNamedOnlineSession* Session = OnlineSessionInterface->GetNamedSession(NAME_GameSession);
+	if (!IsSessionHostAvailable(*Session))
+	{
+		SessionNotice = NSLOCTEXT("PFSession", "HostLeft", "The host has disconnected. Please create or join another session.");
+		ReturnToMainMenu();
+		return;
+	}
+
 	SessionOperation = ESessionOperation::Traveling;
+	SessionOperationStartedAt = FPlatformTime::Seconds();
 	UpdateSessionUI();
 	PlayerController->ClientTravel(Address, TRAVEL_Absolute);
 	if (SessionOperation == ESessionOperation::Traveling && IsValid(TitleWidget))
@@ -343,7 +498,13 @@ void UPFGameInstance::OnFindSessionsComplete(bool IsSucceeded)
 	{
 		FString SessionName;
 		Result.Session.SessionSettings.Get(FName("SessionName"), SessionName);
-		if (InputSessionName != SessionName || !Result.IsValid())
+		if (InputSessionName != SessionName || !Result.IsValid() || RejectedLobbyIds.Contains(Result.GetSessionIdStr()))
+		{
+			continue;
+		}
+
+		FString Heartbeat;
+		if (bSteamSessions && (!Result.Session.SessionSettings.Get(HostHeartbeatKey, Heartbeat) || Heartbeat.IsEmpty()))
 		{
 			continue;
 		}
@@ -351,7 +512,10 @@ void UPFGameInstance::OnFindSessionsComplete(bool IsSucceeded)
 		IsFindSession = true;
 		Result.Session.SessionSettings.bUseLobbiesIfAvailable = true;
 		Result.Session.SessionSettings.bUsesPresence = true;
+		JoiningLobbyId = Result.Session.GetSessionIdStr();
+		SaveRecoveryLobby(JoiningLobbyId);
 		SessionOperation = ESessionOperation::Joining;
+		SessionOperationStartedAt = FPlatformTime::Seconds();
 		JoinSessionCompleteHandle = OnlineSessionInterface->AddOnJoinSessionCompleteDelegate_Handle(JoinSessionCompleteDelegate);
 		UpdateSessionUI();
 		const bool bStarted = OnlineSessionInterface->JoinSession(*LocalPlayer->GetPreferredUniqueNetId(), NAME_GameSession, Result);
@@ -386,6 +550,25 @@ void UPFGameInstance::OnJoinSessionComplete(FName SessionName, EOnJoinSessionCom
 	if (Result == EOnJoinSessionCompleteResult::Success && OnlineSessionInterface.IsValid()
 		&& OnlineSessionInterface->GetResolvedConnectString(NAME_GameSession, Address) && !Address.IsEmpty())
 	{
+		const FNamedOnlineSession* Session = OnlineSessionInterface->GetNamedSession(NAME_GameSession);
+		FString Heartbeat;
+		if (!Session || (bSteamSessions && (!Session->SessionSettings.Get(HostHeartbeatKey, Heartbeat) || Heartbeat.IsEmpty())))
+		{
+			RejectedLobbyIds.Add(JoiningLobbyId);
+			PendingSessionRequest = ESessionRequest::Join;
+			BeginSessionCleanup();
+			return;
+		}
+		SaveRecoveryLobby(Session->GetSessionIdStr());
+		if (bSteamSessions)
+		{
+			LastHostHeartbeat = Heartbeat;
+			LastHostHeartbeatReceivedAt = FPlatformTime::Seconds();
+			SessionOperationStartedAt = LastHostHeartbeatReceivedAt;
+			SessionOperation = ESessionOperation::ValidatingHost;
+			UpdateSessionUI();
+			return;
+		}
 		UpdateSessionUI();
 		if (IsValid(TitleWidget) && TitleWidget->GetWorld() == GetWorld() && TitleWidget->IsInViewport())
 		{
@@ -395,14 +578,21 @@ void UPFGameInstance::OnJoinSessionComplete(FName SessionName, EOnJoinSessionCom
 	}
 
 	PFLOG(Warning, TEXT("Join session failed: %d"), static_cast<int32>(Result));
-	FailSessionRequest();
+	RejectedLobbyIds.Add(JoiningLobbyId);
+	PendingSessionRequest = ESessionRequest::Join;
+	BeginSessionCleanup();
 }
 
 // 세션 정리 후 게임 종료
 void UPFGameInstance::ExitGame()
 {
+	// 메뉴 테스트용 로그
+	PFLOG(Warning, TEXT("[MenuTest] ExitGame entered GI=%s World=%s ShuttingDown=%d ExitRequested=%d ExitDispatched=%d Operation=%d"),
+		*GetNameSafe(this), *GetNameSafe(GetWorld()), bShuttingDown, bExitRequested, bExitDispatched, static_cast<int32>(SessionOperation));
 	if (bShuttingDown || bExitRequested)
 	{
+		// 메뉴 테스트용 로그
+		PFLOG(Warning, TEXT("[MenuTest] ExitGame rejected by guard"));
 		return;
 	}
 	bExitRequested = true;
@@ -414,11 +604,15 @@ void UPFGameInstance::ExitGame()
 			&& SessionOperation != ESessionOperation::Joining
 			&& SessionOperation != ESessionOperation::Destroying))
 	{
+		// 메뉴 테스트용 로그
+		PFLOG(Warning, TEXT("[MenuTest] No session cleanup needed, calling FinishExitGame"));
 		FinishExitGame();
 		return;
 	}
 	ExitTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
 		FTickerDelegate::CreateUObject(this, &UPFGameInstance::HandleExitTimeout), 5.f);
+	// 메뉴 테스트용 로그
+	PFLOG(Warning, TEXT("[MenuTest] Exit timeout registered Valid=%d Delay=5s, beginning cleanup"), ExitTickerHandle.IsValid());
 	BeginSessionCleanup();
 }
 
@@ -444,29 +638,254 @@ void UPFGameInstance::HandleSessionDisconnect(UWorld* World, UNetDriver* NetDriv
 
 	// 엔진이 타이틀 복귀를 결정한 연결만 정리
 	PFLOG(Warning, TEXT("Cleaning session after disconnect"));
+	if (SessionNotice.IsEmpty())
+	{
+		SessionNotice = NSLOCTEXT("PFSession", "Disconnected", "The connection has been lost. Please create or join a session again.");
+	}
 	PendingSessionRequest = ESessionRequest::None;
 	bRestoreSessionInput = false;
 	bReturningToTitle = true;
 	BeginSessionCleanup();
 }
 
+// 네트워크 실패 안내 저장
+void UPFGameInstance::HandleNetworkFailure(UWorld* World, UNetDriver* NetDriver, ENetworkFailure::Type FailureType, const FString& Error)
+{
+	if (bShuttingDown || bExitRequested || !GEngine || !NetDriver) return;
+	if (NetDriver->NetDriverName != NAME_GameNetDriver && NetDriver->NetDriverName != NAME_PendingNetDriver) return;
+	const FWorldContext* Context = World ? GEngine->GetWorldContextFromWorld(World)
+		: GEngine->GetWorldContextFromPendingNetGameNetDriver(NetDriver);
+	if (!Context || Context->OwningGameInstance != this) return;
+	if (NetDriver->GetNetMode() != NM_Client
+		&& (FailureType == ENetworkFailure::ConnectionLost || FailureType == ENetworkFailure::ConnectionTimeout)) return;
+
+	PFLOG(Warning, TEXT("Session network failure: %s"), *Error);
+	SessionNotice = NSLOCTEXT("PFSession", "Disconnected", "The connection has been lost. Please create or join a session again.");
+	UpdateSessionUI();
+}
+
+// 맵 이동 실패 안내 저장
+void UPFGameInstance::HandleTravelFailure(UWorld* World, ETravelFailure::Type FailureType, const FString& Error)
+{
+	if (bShuttingDown || bExitRequested || !World || World->GetGameInstance() != this) return;
+	PFLOG(Warning, TEXT("Session travel failure %d: %s"), static_cast<int32>(FailureType), *Error);
+	SessionNotice = NSLOCTEXT("PFSession", "TravelFailed", "Could not connect to the game. Please create or join a session again.");
+	UpdateSessionUI();
+}
+
+// 맵 이동 완료 상태 반영
+void UPFGameInstance::HandleMapLoaded(UWorld* World)
+{
+	if (!World || World->GetGameInstance() != this) return;
+	if (SessionOperation == ESessionOperation::Traveling)
+	{
+		SessionOperation = ESessionOperation::Idle;
+	}
+	NextHostHeartbeatAt = 0.0;
+	LastHostHeartbeatReceivedAt = FPlatformTime::Seconds();
+	if (World->GetMapName().Contains(TEXT("Title")))
+	{
+		bReturningToTitle = false;
+	}
+	UpdateSessionUI();
+}
+
+// 세션 호스트의 최근 생존 신호 확인
+bool UPFGameInstance::IsSessionHostAvailable(const FNamedOnlineSession& Session) const
+{
+	if (!bSteamSessions || Session.bHosting) return true;
+	return Session.OwningUserId.IsValid() && !LastHostHeartbeat.IsEmpty()
+		&& FPlatformTime::Seconds() - LastHostHeartbeatReceivedAt < HostHeartbeatTimeout;
+}
+
+// 호스트 생존 신호 갱신 완료
+void UPFGameInstance::OnHostHeartbeatComplete(FName SessionName, bool bSucceeded)
+{
+	// 종료 후 도착한 콜백의 상태 변경 방지
+	if (bShuttingDown || bExitDispatched || SessionName != NAME_GameSession || !bHostHeartbeatPending) return;
+	bHostHeartbeatPending = false;
+	if (!bSucceeded)
+	{
+		PFLOG(Warning, TEXT("Host heartbeat update failed"));
+	}
+	if (bCleanupRequested)
+	{
+		BeginSessionCleanup();
+	}
+}
+
+// 이전 실행에서 남긴 로컬 세션 기록 정리
+void UPFGameInstance::RecoverPreviousLobby()
+{
+	if (bStartupLobbyRecovered) return;
+	if (!bSteamSessions || GIsEditor)
+	{
+		bStartupLobbyRecovered = true;
+		return;
+	}
+	IOnlineSubsystem* OnlineSubsystem = IOnlineSubsystem::Get();
+	const IOnlineIdentityPtr Identity = OnlineSubsystem ? OnlineSubsystem->GetIdentityInterface() : nullptr;
+	if (!GConfig || !Identity.IsValid() || Identity->GetLoginStatus(0) != ELoginStatus::LoggedIn) return;
+	const FUniqueNetIdPtr UserId = Identity->GetUniquePlayerId(0);
+	if (!UserId.IsValid()) return;
+
+	RecoverySettingsSection = FString::Printf(TEXT("PortFolio.SessionRecovery.%s"), *UserId->ToString());
+	FString PreviousLobby;
+	GConfig->GetString(*RecoverySettingsSection, TEXT("LobbyId"), PreviousLobby, GGameUserSettingsIni);
+	if (!PreviousLobby.IsEmpty())
+	{
+		SessionNotice = NSLOCTEXT("PFSession", "RecoveryReset", "Previous session information was reset. Please create or join a session.");
+		PFLOG(Warning, TEXT("Cleared previous local session record %s"), *PreviousLobby);
+	}
+	SaveRecoveryLobby(FString());
+	bStartupLobbyRecovered = true;
+	UpdateSessionUI();
+}
+
+// 재실행 복구용 로비 기록
+void UPFGameInstance::SaveRecoveryLobby(const FString& LobbyId)
+{
+	if (!GConfig || !bSteamSessions || GIsEditor || RecoverySettingsSection.IsEmpty()) return;
+	GConfig->SetString(*RecoverySettingsSection, TEXT("LobbyId"), *LobbyId, GGameUserSettingsIni);
+	GConfig->Flush(false, GGameUserSettingsIni);
+}
+
+// 세션 대기 제한, 로비 호스트 감시
+bool UPFGameInstance::TickSessionRecovery(float DeltaTime)
+{
+	(void)DeltaTime;
+	if (bShuttingDown || bExitDispatched) return false;
+	RecoverPreviousLobby();
+	if (bExitRequested) return true;
+
+	const double Now = FPlatformTime::Seconds();
+	if (bCleanupRequested)
+	{
+		if (SessionOperation == ESessionOperation::Destroying && OnlineSessionInterface.IsValid()
+			&& !OnlineSessionInterface->GetNamedSession(NAME_GameSession))
+		{
+			OnDestroySessionComplete(NAME_GameSession, true);
+			return true;
+		}
+		if (!bCleanupTimedOut && Now >= CleanupDeadline)
+		{
+			// 늦은 콜백이 새 세션을 지우지 않도록 기존 작업 유지
+			bCleanupTimedOut = true;
+			PendingSessionRequest = ESessionRequest::None;
+			bRestoreSessionInput = true;
+			SessionNotice = NSLOCTEXT("PFSession", "CleanupDelayed", "Steam session cleanup is delayed. Try again shortly, or restart the game.");
+			PFLOG(Warning, TEXT("Session cleanup timed out, waiting for the outstanding operation before reuse"));
+			UpdateSessionUI();
+		}
+		return true;
+	}
+
+	if ((SessionOperation == ESessionOperation::Creating || SessionOperation == ESessionOperation::Finding
+		|| SessionOperation == ESessionOperation::Joining) && Now - SessionOperationStartedAt >= 30.0)
+	{
+		SessionNotice = NSLOCTEXT("PFSession", "RequestTimeout", "The session request timed out. Please try again.");
+		FailSessionRequest();
+		return true;
+	}
+	if (SessionOperation == ESessionOperation::Traveling && Now - SessionOperationStartedAt >= 60.0)
+	{
+		SessionNotice = NSLOCTEXT("PFSession", "TravelTimeout", "Connecting to the game timed out. Please try again.");
+		ReturnToMainMenu();
+		return true;
+	}
+
+	if (bSteamSessions && OnlineSessionInterface.IsValid()
+		&& (SessionOperation == ESessionOperation::Idle || SessionOperation == ESessionOperation::Traveling
+			|| SessionOperation == ESessionOperation::ValidatingHost))
+	{
+		const FNamedOnlineSession* Session = OnlineSessionInterface->GetNamedSession(NAME_GameSession);
+		if (!Session)
+		{
+			if (SessionOperation == ESessionOperation::ValidatingHost)
+			{
+				FailSessionRequest();
+			}
+			return true;
+		}
+		if (Session->bHosting)
+		{
+			if (!bHostHeartbeatPending && Now >= NextHostHeartbeatAt)
+			{
+				FOnlineSessionSettings Settings = Session->SessionSettings;
+				Settings.Set(HostHeartbeatKey, FGuid::NewGuid().ToString(), EOnlineDataAdvertisementType::ViaOnlineService);
+				NextHostHeartbeatAt = Now + HostHeartbeatInterval;
+				bHostHeartbeatPending = true;
+				if (!OnlineSessionInterface->UpdateSession(NAME_GameSession, Settings, true) && bHostHeartbeatPending)
+				{
+					OnHostHeartbeatComplete(NAME_GameSession, false);
+				}
+			}
+			return true;
+		}
+
+		FString Heartbeat;
+		if (Session->SessionSettings.Get(HostHeartbeatKey, Heartbeat) && !Heartbeat.IsEmpty() && Heartbeat != LastHostHeartbeat)
+		{
+			LastHostHeartbeat = Heartbeat;
+			LastHostHeartbeatReceivedAt = Now;
+			if (SessionOperation == ESessionOperation::ValidatingHost)
+			{
+				SessionOperation = ESessionOperation::Idle;
+				UpdateSessionUI();
+				if (IsValid(TitleWidget) && TitleWidget->GetWorld() == GetWorld() && TitleWidget->IsInViewport())
+				{
+					TitleWidget->ShowCharacterSelection();
+				}
+			}
+		}
+		if (SessionOperation == ESessionOperation::ValidatingHost)
+		{
+			if (Now - SessionOperationStartedAt >= HostValidationTimeout)
+			{
+				RejectedLobbyIds.Add(JoiningLobbyId);
+				PendingSessionRequest = ESessionRequest::Join;
+				BeginSessionCleanup();
+			}
+		}
+		else if (!IsSessionHostAvailable(*Session))
+		{
+			SessionNotice = NSLOCTEXT("PFSession", "HostLeft", "The host has disconnected. Please create or join another session.");
+			ReturnToMainMenu();
+		}
+	}
+	return true;
+}
+
 // 진행 중인 작업 완료 후 세션 제거
 void UPFGameInstance::BeginSessionCleanup()
 {
+	// 메뉴 테스트용 로그
+	PFLOG(Warning, TEXT("[MenuTest] Cleanup entered GI=%s World=%s ShuttingDown=%d ExitDispatched=%d ExitRequested=%d Operation=%d Interface=%d"),
+		*GetNameSafe(this), *GetNameSafe(GetWorld()), bShuttingDown, bExitDispatched, bExitRequested,
+		static_cast<int32>(SessionOperation), OnlineSessionInterface.IsValid());
 	if (bShuttingDown || bExitDispatched)
 	{
+		// 메뉴 테스트용 로그
+		PFLOG(Warning, TEXT("[MenuTest] Cleanup rejected by guard"));
 		return;
+	}
+	if (!bCleanupRequested)
+	{
+		CleanupDeadline = FPlatformTime::Seconds() + 5.0;
+		bCleanupTimedOut = false;
 	}
 	bCleanupRequested = true;
 	Address.Empty();
 	IsFindSession = false;
 	UpdateSessionUI();
 
-	if (SessionOperation == ESessionOperation::Creating
+	if (bHostHeartbeatPending || SessionOperation == ESessionOperation::Creating
 		|| SessionOperation == ESessionOperation::Finding
 		|| SessionOperation == ESessionOperation::Joining
 		|| SessionOperation == ESessionOperation::Destroying)
 	{
+		// 메뉴 테스트용 로그
+		PFLOG(Warning, TEXT("[MenuTest] Cleanup waiting for current operation=%d"), static_cast<int32>(SessionOperation));
 		return;
 	}
 
@@ -475,6 +894,8 @@ void UPFGameInstance::BeginSessionCleanup()
 	SessionOperation = ESessionOperation::Idle;
 	if (!OnlineSessionInterface.IsValid() || !OnlineSessionInterface->GetNamedSession(NAME_GameSession))
 	{
+		// 메뉴 테스트용 로그
+		PFLOG(Warning, TEXT("[MenuTest] Cleanup found no session, completing immediately"));
 		FinishSessionCleanup(true);
 		return;
 	}
@@ -484,10 +905,17 @@ void UPFGameInstance::BeginSessionCleanup()
 		FOnDestroySessionCompleteDelegate::CreateUObject(this, &UPFGameInstance::OnDestroySessionComplete));
 	if (OnlineSessionInterface->GetSessionState(NAME_GameSession) == EOnlineSessionState::Destroying)
 	{
+		// 메뉴 테스트용 로그
+		PFLOG(Warning, TEXT("[MenuTest] Session already destroying, waiting for completion callback"));
 		return;
 	}
 
+	// 메뉴 테스트용 로그
+	PFLOG(Warning, TEXT("[MenuTest] Calling DestroySession SessionState=%d"),
+		static_cast<int32>(OnlineSessionInterface->GetSessionState(NAME_GameSession)));
 	const bool bStarted = OnlineSessionInterface->DestroySession(NAME_GameSession);
+	// 메뉴 테스트용 로그
+	PFLOG(Warning, TEXT("[MenuTest] DestroySession call returned Started=%d Operation=%d"), bStarted, static_cast<int32>(SessionOperation));
 	if (!bStarted && SessionOperation == ESessionOperation::Destroying
 		&& OnlineSessionInterface->GetSessionState(NAME_GameSession) != EOnlineSessionState::Destroying)
 	{
@@ -498,9 +926,14 @@ void UPFGameInstance::BeginSessionCleanup()
 // 세션 제거 결과 확인
 void UPFGameInstance::OnDestroySessionComplete(FName SessionName, bool bSucceeded)
 {
+	// 메뉴 테스트용 로그
+	PFLOG(Warning, TEXT("[MenuTest] DestroySession callback GI=%s Session=%s Success=%d ShuttingDown=%d ExitDispatched=%d Operation=%d"),
+		*GetNameSafe(this), *SessionName.ToString(), bSucceeded, bShuttingDown, bExitDispatched, static_cast<int32>(SessionOperation));
 	if (bShuttingDown || bExitDispatched || SessionName != NAME_GameSession
 		|| SessionOperation != ESessionOperation::Destroying)
 	{
+		// 메뉴 테스트용 로그
+		PFLOG(Warning, TEXT("[MenuTest] DestroySession callback rejected by guard"));
 		return;
 	}
 	ClearSessionDelegates();
@@ -519,7 +952,24 @@ void UPFGameInstance::OnDestroySessionComplete(FName SessionName, bool bSucceede
 // 정리 완료 후 예약 요청, 입력 복원
 void UPFGameInstance::FinishSessionCleanup(bool bSucceeded)
 {
+	// 메뉴 테스트용 로그
+	PFLOG(Warning, TEXT("[MenuTest] Cleanup finished GI=%s Success=%d ExitRequested=%d ReturningToTitle=%d PendingRequest=%d"),
+		*GetNameSafe(this), bSucceeded, bExitRequested, bReturningToTitle, static_cast<int32>(PendingSessionRequest));
+	if (bSucceeded && bCleanupTimedOut)
+	{
+		SessionNotice = NSLOCTEXT("PFSession", "CleanupRecovered", "The previous session has been cleared. You can create or join a session again.");
+		bRestoreSessionInput = true;
+	}
 	bCleanupRequested = false;
+	bCleanupTimedOut = false;
+	CleanupDeadline = 0.0;
+	LastHostHeartbeat.Empty();
+	LastHostHeartbeatReceivedAt = 0.0;
+	NextHostHeartbeatAt = 0.0;
+	if (bSucceeded)
+	{
+		SaveRecoveryLobby(FString());
+	}
 	SessionOperation = ESessionOperation::Idle;
 	SessionSearch.Reset();
 	Address.Empty();
@@ -549,6 +999,10 @@ void UPFGameInstance::FinishSessionCleanup(bool bSucceeded)
 // 실패한 요청의 잔여 세션 정리
 void UPFGameInstance::FailSessionRequest()
 {
+	if (SessionNotice.IsEmpty())
+	{
+		SessionNotice = NSLOCTEXT("PFSession", "RequestFailed", "Could not create or join the session. Check the session name and try again.");
+	}
 	if (GEngine)
 	{
 		GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Red, TEXT("Session request failed"));
@@ -581,9 +1035,14 @@ void UPFGameInstance::UpdateSessionUI()
 	{
 		return;
 	}
-	const bool bBusy = bCleanupRequested || bReturningToTitle || bExitRequested
-		|| SessionOperation != ESessionOperation::Idle;
-	TitleWidget->SetSessionBusy(bBusy);
+	TitleWidget->SetSessionNotice(SessionNotice);
+	const bool bBusy = bReturningToTitle || bExitRequested
+		|| (!bCleanupTimedOut && (bCleanupRequested || SessionOperation != ESessionOperation::Idle));
+	const bool bEnteringGame = !bReturningToTitle && !bExitRequested && !bCleanupTimedOut
+		&& (PendingSessionRequest == ESessionRequest::Create
+			|| (!bCleanupRequested && (SessionOperation == ESessionOperation::Creating
+				|| SessionOperation == ESessionOperation::Traveling)));
+	TitleWidget->SetSessionBusy(bBusy, bEnteringGame);
 	if (!bBusy && bRestoreSessionInput)
 	{
 		TitleWidget->ShowJoinFailed();
@@ -594,8 +1053,13 @@ void UPFGameInstance::UpdateSessionUI()
 // 세션 대기 종료, 게임 종료 명령
 void UPFGameInstance::FinishExitGame()
 {
+	// 메뉴 테스트용 로그
+	PFLOG(Warning, TEXT("[MenuTest] FinishExitGame entered GI=%s World=%s ShuttingDown=%d ExitDispatched=%d"),
+		*GetNameSafe(this), *GetNameSafe(GetWorld()), bShuttingDown, bExitDispatched);
 	if (bShuttingDown || bExitDispatched)
 	{
+		// 메뉴 테스트용 로그
+		PFLOG(Warning, TEXT("[MenuTest] FinishExitGame rejected by guard"));
 		return;
 	}
 	bExitDispatched = true;
@@ -604,12 +1068,24 @@ void UPFGameInstance::FinishExitGame()
 	ExitTickerHandle.Reset();
 	if (APlayerController* PlayerController = GetFirstLocalPlayerController())
 	{
+		// 메뉴 테스트용 로그
+		PFLOG(Warning, TEXT("[MenuTest] Dispatching quit through Controller=%s HasPlayer=%d"),
+			*GetNameSafe(PlayerController), PlayerController->Player != nullptr);
 		PlayerController->ConsoleCommand(TEXT("quit"));
 	}
 	else if (GEngine)
 	{
+		// 메뉴 테스트용 로그
+		PFLOG(Warning, TEXT("[MenuTest] Dispatching QUIT through engine, no local controller"));
 		GEngine->Exec(GetWorld(), TEXT("QUIT"));
 	}
+	else
+	{
+		// 메뉴 테스트용 로그
+		PFLOG(Warning, TEXT("[MenuTest] Quit not dispatched: no local controller or engine"));
+	}
+	// 메뉴 테스트용 로그
+	PFLOG(Warning, TEXT("[MenuTest] FinishExitGame call returned"));
 }
 
 // 세션 정리 응답 지연 시 게임 종료
@@ -617,6 +1093,9 @@ bool UPFGameInstance::HandleExitTimeout(float DeltaTime)
 {
 	(void)DeltaTime;
 	ExitTickerHandle.Reset();
+	// 메뉴 테스트용 로그
+	PFLOG(Warning, TEXT("[MenuTest] Exit timeout fired GI=%s Operation=%d ExitRequested=%d ExitDispatched=%d"),
+		*GetNameSafe(this), static_cast<int32>(SessionOperation), bExitRequested, bExitDispatched);
 	PFLOG(Warning, TEXT("Session cleanup exceeded exit timeout"));
 	FinishExitGame();
 	return false;

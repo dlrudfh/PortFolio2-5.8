@@ -8,14 +8,17 @@
 #include "EngineUtils.h"
 #include "GameFramework/Character.h"
 #include "Misc/ScopedSlowTask.h"
+#include "NavigationSystemTypes.h"
 #include "NavMesh/RecastNavMesh.h"
 #include "NavMesh/RecastQueryFilter.h"
+#include "System/Navigation/PFNavArea_WalkableNoJump.h"
 #include "System/Navigation/PFNavigationLink.h"
 #include "System/Navigation/PFNavigationTraversal.h"
 
 namespace
 {
 	constexpr double BucketSize = 512.0;
+	constexpr double MaxMergeWalkDistance = 400.0;
 
 	struct FSurface
 	{
@@ -101,10 +104,33 @@ namespace
 		return NavMesh.IsSegmentOnNavmesh(A, B, Filter, &Bot);
 	}
 
-	// 인접 경계 그룹에 남은 유사 링크 정리
+	// 점프 없는 4m 이내 보행 경로 확인
+	bool CanWalkWithinMergeDistance(ARecastNavMesh& NavMesh, const FVector& A, const FVector& B,
+		const FSharedConstNavQueryFilter& Filter, const ACharacter& Bot)
+	{
+		if (FVector::DistSquared(A, B) > FMath::Square(MaxMergeWalkDistance))
+		{
+			return false;
+		}
+		if (CanWalkDirect(NavMesh, A, B, Filter, Bot))
+		{
+			return true;
+		}
+		FPathFindingQuery Query(&Bot, NavMesh, A, B, Filter);
+		Query.SetAllowPartialPaths(false);
+		Query.SetRequireNavigableEndLocation(true);
+		const FPathFindingResult Result = NavMesh.FindPath(Bot.GetNavAgentPropertiesRef(), Query);
+		return Result.IsSuccessful() && Result.Path.IsValid() && Result.Path->IsValid() && !Result.IsPartial()
+			&& Result.Path->GetLength() <= MaxMergeWalkDistance;
+	}
+
+	// 가까운 끝점, 양쪽의 짧은 보행 경로로 중복 링크 병합
 	int32 CompactLinks(TArray<FGeneratedLink>& Links, ARecastNavMesh& NavMesh,
 		const FSharedConstNavQueryFilter& Filter, const ACharacter& Bot, float MergeDistance)
 	{
+		FSharedNavQueryFilter MutableWalkFilter = Filter->GetCopy();
+		MutableWalkFilter->SetMaxSearchNodes(1024);
+		const FSharedConstNavQueryFilter WalkFilter = MutableWalkFilter;
 		Links.StableSort([](const FGeneratedLink& A, const FGeneratedLink& B)
 		{
 			if (A.Mode != B.Mode)
@@ -119,6 +145,7 @@ namespace
 		const double MergeDistanceSquared = FMath::Square(MergeDistance);
 		for (const FGeneratedLink& Link : Links)
 		{
+			TSet<int32> CheckedLinks;
 			auto HasDuplicateNearby = [&](const FVector& Point, const TMap<FIntPoint, TArray<int32>>& ByPoint)
 			{
 				const FIntPoint Min = Bucket(Point - FVector(MergeDistance, MergeDistance, 0));
@@ -134,16 +161,22 @@ namespace
 						}
 						for (int32 Index : *Nearby)
 						{
-							const FGeneratedLink& Previous = Kept[Index];
-							if (Link.ActorDirection.Source != Previous.ActorDirection.Source
-								|| Link.ActorDirection.Destination != Previous.ActorDirection.Destination
-								|| (FVector::DistSquared2D(Link.Start, Previous.Start) > MergeDistanceSquared
-									&& FVector::DistSquared2D(Link.End, Previous.End) > MergeDistanceSquared))
+							if (CheckedLinks.Contains(Index))
 							{
 								continue;
 							}
-							if (CanWalkDirect(NavMesh, Link.NavStart, Previous.NavStart, Filter, Bot)
-								&& CanWalkDirect(NavMesh, Link.NavEnd, Previous.NavEnd, Filter, Bot))
+							CheckedLinks.Add(Index);
+							const FGeneratedLink& Previous = Kept[Index];
+							const double StartDistanceSquared = FVector::DistSquared(Link.Start, Previous.Start);
+							const double EndDistanceSquared = FVector::DistSquared(Link.End, Previous.End);
+							if ((StartDistanceSquared > MergeDistanceSquared && EndDistanceSquared > MergeDistanceSquared)
+								|| StartDistanceSquared > FMath::Square(MaxMergeWalkDistance)
+								|| EndDistanceSquared > FMath::Square(MaxMergeWalkDistance))
+							{
+								continue;
+							}
+							if (CanWalkWithinMergeDistance(NavMesh, Link.NavStart, Previous.NavStart, WalkFilter, Bot)
+								&& CanWalkWithinMergeDistance(NavMesh, Link.NavEnd, Previous.NavEnd, WalkFilter, Bot))
 							{
 								return true;
 							}
@@ -287,6 +320,7 @@ bool PFNavigationLinkBuilder::Build(UWorld& World, ARecastNavMesh& NavMesh, cons
 	TMap<FIntPoint, TArray<int32>> Buckets;
 	FBox Bounds(ForceInit);
 	TArray<FNavTileRef> Tiles;
+	const uint8 WalkableNoJumpArea = NavMesh.GetAreaID(UPFNavArea_WalkableNoJump::StaticClass());
 	NavMesh.GetAllNavMeshTiles(Tiles);
 	for (FNavTileRef Tile : Tiles)
 	{
@@ -295,7 +329,8 @@ bool PFNavigationLinkBuilder::Build(UWorld& World, ARecastNavMesh& NavMesh, cons
 		for (const FNavPoly& Poly : Polys)
 		{
 			FNavMeshNodeFlags Flags;
-			if (!NavMesh.GetPolyFlags(Poly.Ref, Flags) || Flags.IsNavLink() || Flags.Area == RECAST_NULL_AREA)
+			if (!NavMesh.GetPolyFlags(Poly.Ref, Flags) || Flags.IsNavLink() || Flags.Area == RECAST_NULL_AREA
+				|| Flags.Area == WalkableNoJumpArea)
 			{
 				continue;
 			}

@@ -4,6 +4,7 @@
 #include "Animation/AnimInstance.h"
 #include "AlphaBlend.h"
 #include "GameplayTagContainer.h"
+#include <atomic>
 #include "PFAnimInstance.generated.h"
 
 DECLARE_MULTICAST_DELEGATE(FDeathEndDelegate);
@@ -84,7 +85,15 @@ protected:
 
 private:
 	void RefreshCachedStateTags();
-	// 애니메이션 조회용 상태 태그 캐시
-	UPROPERTY(Transient)
-	FGameplayTagContainer CachedStateTags;
+	enum : uint8
+	{
+		InAirFlag = 1 << 0,
+		AttackFlag = 1 << 1,
+		ComboWindowFlag = 1 << 2,
+		UltimateFlag = 1 << 3,
+		SprintFlag = 1 << 4,
+		DeadFlag = 1 << 5
+	};
+	// 애니메이션 조회용 상태 플래그 캐시
+	std::atomic<uint8> CachedStateFlags{0};
 };

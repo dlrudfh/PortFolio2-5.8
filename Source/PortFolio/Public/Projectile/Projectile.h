@@ -39,6 +39,10 @@ protected:
 	virtual void SetComponent() PURE_VIRTUAL(AProjectile::SetComponent);
 	virtual void SetParticle() PURE_VIRTUAL(AProjectile::SetParticle);
 	virtual void BeginPlay() override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	virtual void UpdatePoolVisuals();
+	UFUNCTION()
+	void OnRep_IsActive();
 
 protected:
 	UFUNCTION()
@@ -75,6 +79,9 @@ protected:
 	class APFCharacter* Parent;
 	// 피해 출처 어빌리티
 	TWeakObjectPtr<class UGameplayAbility> SourceAbility;
+
+	UPROPERTY(ReplicatedUsing = OnRep_IsActive)
+	bool bIsActive = false;
 
 	// 풀 반환 예약
 	FTimerHandle ReturnTimerHandle;

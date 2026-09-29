@@ -23,7 +23,6 @@ public:
 	bool IsInventoryWindowVisible() const;
 
 protected:
-	virtual TSharedRef<SWidget> RebuildWidget() override;
 	virtual void NativeConstruct() override;
 	virtual void NativeDestruct() override;
 	virtual void NativeOnFocusLost(const FFocusEvent& InFocusEvent) override;
@@ -41,12 +40,6 @@ protected:
 	virtual FReply NativeOnMouseButtonDoubleClick(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;
 
 private:
-	static constexpr int32 InventoryColumnCount = 5;
-
-	static constexpr int32 QuickSlotColumnCount = 4;
-
-	static constexpr float SlotSize = 84.f;
-
 	void UpdateInventoryWindowPosition(const FVector2D& ScreenSpacePosition);
 
 	void UpdateDragPreviewPosition(const FVector2D& ScreenSpacePosition);
@@ -90,15 +83,6 @@ private:
 	UPROPERTY()
 	class UBorder* TitleBarBorder = nullptr;
 
-	UPROPERTY()
-	class UTextBlock* TitleText = nullptr;
-
-	UPROPERTY()
-	class UUniformGridPanel* InventoryGrid = nullptr;
-
-	UPROPERTY()
-	class UUniformGridPanel* QuickSlotGrid = nullptr;
-
 	// 인벤토리 슬롯 표시 요소
 	UPROPERTY()
 	TArray<class UBorder*> InventorySlotBorders;
@@ -132,9 +116,6 @@ private:
 
 	UPROPERTY()
 	TArray<class UTextBlock*> QuickSlotCooldownTexts;
-
-	UPROPERTY()
-	TArray<class UTextBlock*> QuickSlotKeyTexts;
 
 	// 드래그 중인 아이템 표시
 	UPROPERTY()

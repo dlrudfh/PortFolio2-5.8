@@ -36,7 +36,8 @@ bool UPFGA_Ultimate_TwinBlast::CanActivateAbility(
 	const UCharacterMovementComponent* CharacterMovementComponent = TwinBlast
 		? TwinBlast->GetCharacterMovement()
 		: nullptr;
-	return TwinBlast && TwinBlast->IsPlayerCharacter() && CharacterMovementComponent && !CharacterMovementComponent->IsFalling();
+	return TwinBlast && TwinBlast->IsPlayerCharacter() && !TwinBlast->IsJumpPadFlightActive()
+		&& CharacterMovementComponent && !CharacterMovementComponent->IsFalling();
 }
 
 void UPFGA_Ultimate_TwinBlast::ActivateAbility(

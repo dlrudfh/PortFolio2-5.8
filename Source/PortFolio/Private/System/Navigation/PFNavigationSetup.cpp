@@ -125,6 +125,7 @@ void APFNavigationSetup::PrepareStaticNavigation()
 		NavMesh->MarkPackageDirty();
 	}
 
+	ApplyNavigationQuerySettings();
 	Navigation->Build();
 	PreparationResult.Reset();
 	for (ARecastNavMesh* NavMesh : NavMeshes)
@@ -142,6 +143,26 @@ void APFNavigationSetup::PrepareStaticNavigation()
 	PreparationResult += FString::Printf(TEXT(" Excluded %d physics meshes."), ObstacleCount);
 	MarkPackageDirty();
 	UE_LOG(LogTemp, Display, TEXT("%s"), *PreparationResult);
+#endif
+}
+
+// 맵별 경로 탐색 한도 반영
+void APFNavigationSetup::ApplyNavigationQuerySettings()
+{
+#if WITH_EDITOR
+	UWorld* World = GetWorld();
+	FFloatProperty* SearchNodesProperty = FindFProperty<FFloatProperty>(ARecastNavMesh::StaticClass(), TEXT("DefaultMaxSearchNodes"));
+	if (!World || World->IsGameWorld() || !SearchNodesProperty)
+	{
+		return;
+	}
+	for (TActorIterator<ARecastNavMesh> It(World); It; ++It)
+	{
+		It->Modify();
+		SearchNodesProperty->SetPropertyValue_InContainer(*It, static_cast<float>(FMath::Clamp(MaxSearchNodes, 2048, 65536)));
+		It->RecreateDefaultFilter();
+		It->MarkPackageDirty();
+	}
 #endif
 }
 

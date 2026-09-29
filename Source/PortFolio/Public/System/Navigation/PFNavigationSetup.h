@@ -21,10 +21,16 @@ public:
 	UFUNCTION(CallInEditor, Category = Navigation, meta = (DisplayName = "Delete All Traversal Links", DisplayPriority = "2"))
 	void DeleteAllTraversalLinks();
 
+	UFUNCTION(CallInEditor, Category = Navigation, meta = (DisplayName = "Apply Navigation Query Settings", DisplayPriority = "3"))
+	void ApplyNavigationQuerySettings();
+
 protected:
 	// 점프 생성에 사용할 봇 기본 설정
 	UPROPERTY(EditAnywhere, Category = Navigation)
 	TSubclassOf<APFCharacter> BotClass;
+
+	UPROPERTY(EditAnywhere, Category = Navigation, meta = (ClampMin = "2048", ClampMax = "65536"))
+	int32 MaxSearchNodes = 2048;
 
 	UPROPERTY(VisibleAnywhere, Category = Navigation)
 	FString PreparationResult;

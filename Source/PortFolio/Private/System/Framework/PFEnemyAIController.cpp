@@ -62,6 +62,7 @@ void APFEnemyAIController::OnPossess(APawn* InPawn)
 	bNavigationAbortPending = false;
 	bMoveBlockedLastTick = false;
 	FailedJumpLinks.Reset();
+	RevealedAttackers.Reset();
 	TargetRefreshTimeRemaining = 0.f;
 	AttackCommandTimeRemaining = 0.f;
 }
@@ -83,6 +84,7 @@ void APFEnemyAIController::OnUnPossess()
 	}
 	ControlledCharacter.Reset();
 	TargetCharacter.Reset();
+	RevealedAttackers.Reset();
 	Super::OnUnPossess();
 	if (!IsActorBeingDestroyed())
 	{
@@ -139,6 +141,15 @@ void APFEnemyAIController::Tick(float DeltaTime)
 	}
 
 	// 판단 주기, 추적 대상 갱신
+	for (auto Iterator = RevealedAttackers.CreateIterator(); Iterator; ++Iterator)
+	{
+		const APFCharacter* Attacker = Iterator->Get();
+		if (!IsValid(Attacker) || Attacker->IsDeadCharacter() || !Attacker->IsPlayerCharacter()
+			|| FVector::DistSquared2D(ControlledCharacter->GetActorLocation(), Attacker->GetActorLocation()) > FMath::Square(TargetSearchRadius))
+		{
+			Iterator.RemoveCurrent();
+		}
+	}
 	TargetRefreshTimeRemaining -= DeltaTime;
 	AttackCommandTimeRemaining -= DeltaTime;
 
@@ -224,15 +235,32 @@ void APFEnemyAIController::AcquireNearestPlayerTarget()
 	}
 }
 
-// 공격 대상 플레이어 확인
+// 탐색 범위 내 은신 중 공격자 기억
+void APFEnemyAIController::RememberShrubAttacker(APFCharacter* Attacker)
+{
+	if (!HasAuthority() || !ControlledCharacter.IsValid() || ControlledCharacter->IsDeadCharacter() || !IsValid(Attacker)
+		|| !Attacker->IsPlayerCharacter() || Attacker->IsDeadCharacter() || !Attacker->IsShrubConcealed()
+		|| FVector::DistSquared2D(ControlledCharacter->GetActorLocation(), Attacker->GetActorLocation()) > FMath::Square(TargetSearchRadius))
+	{
+		return;
+	}
+	RevealedAttackers.Add(Attacker);
+	TargetRefreshTimeRemaining = 0.f;
+}
+
+// 탐색 범위 내 플레이어 확인
 bool APFEnemyAIController::IsPlayerTargetValid(const APFCharacter* Candidate) const
 {
 	return IsValid(Candidate)
+		&& ControlledCharacter.IsValid()
 		&& Candidate != ControlledCharacter.Get()
 		&& !Candidate->IsDeadCharacter()
 		&& !Candidate->HasStateTag(PFGameplayTags::Character_State_Invulnerable)
 		&& Candidate->IsPlayerCharacter()
-		&& Cast<APlayerController>(Candidate->GetController()) != nullptr;
+		&& (!Candidate->IsShrubConcealed() || RevealedAttackers.Contains(Candidate))
+		&& Cast<APlayerController>(Candidate->GetController()) != nullptr
+		&& FVector::DistSquared2D(ControlledCharacter->GetActorLocation(), Candidate->GetActorLocation())
+			<= FMath::Square(TargetSearchRadius);
 }
 
 // 캡슐 표면 사이 거리 계산

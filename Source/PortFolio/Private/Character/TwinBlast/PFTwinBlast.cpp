@@ -129,7 +129,7 @@ void APFTwinBlast::SetMesh()
 	{
 		PFLOG(Fatal, TEXT("BluePrint Failed"));
 	}
-	GetMesh()->SetIsReplicated(true);
+	GetMesh()->SetIsReplicated(false);
 }
 
 void APFTwinBlast::SetParticle()

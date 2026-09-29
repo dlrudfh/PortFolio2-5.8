@@ -28,7 +28,7 @@ void APFKwang::PostInitializeComponents()
 	Cast<UPFAnimInst_Kwang>(PFAnim)->AttackStart.AddUObject(this, &APFKwang::AttackStart);
 	Cast<UPFAnimInst_Kwang>(PFAnim)->AttackEnd.AddUObject(this, &APFKwang::AttackEnd);
 
-	GetMesh()->SetCollisionProfileName(TEXT("PFCharacter"));
+	GetMesh()->SetCollisionProfileName(TEXT("CharacterMesh"));
 }
 
 void APFKwang::Tick(float DeltaTime)

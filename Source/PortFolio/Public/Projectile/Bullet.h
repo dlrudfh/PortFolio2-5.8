@@ -28,6 +28,7 @@ protected:
 	virtual void SetParticle() override;
 
 	virtual void SpawnFromPool() override;
+	virtual void UpdatePoolVisuals() override;
 
 private:
 	virtual void BeginPlay() override;
@@ -36,5 +37,9 @@ private:
 		UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult) override;
 
 	UFUNCTION(NetMulticast, Reliable)
-	void Mutlicast_PlayHitEffect(PARTICLE_BULLET particleIndex);
+	void Mutlicast_PlayHitEffect(PARTICLE_BULLET particleIndex, FVector HitLocation);
+
+	// 현재 발사의 궤적 이펙트
+	UPROPERTY(Transient)
+	TObjectPtr<class UParticleSystemComponent> TrailComponent = nullptr;
 };

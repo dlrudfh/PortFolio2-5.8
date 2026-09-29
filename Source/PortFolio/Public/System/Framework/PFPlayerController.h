@@ -24,10 +24,12 @@ public:
 	virtual void OnUnPossess() override;
 	virtual void OnRep_Pawn() override;
 	virtual void AcknowledgePossession(APawn* P) override;
+	virtual void SeamlessTravelFrom(APlayerController* OldPC) override;
 	virtual bool TryGetCombatAim(FVector& OutAimPoint) override;
 	void SetChest(class APFChest* Chest = nullptr);
 	void CaptureCharacterState();
 	void RestoreCharacterState();
+	void ResetGameplayInput();
 
 	ECHARACTER GetCharacter() { return GetPlayerState<APFPlayerState>()->GetCharacter(); }
 	void SetCharacter(ECHARACTER SelectedCharacter);
@@ -54,6 +56,7 @@ protected:
 private:
 	class APFCharacter* GetControlledCharacter() const;
 	bool IsCurrentCharacter(const class APFCharacter* ControlledPawn) const;
+	bool CanUseGameplayInput(const class APFCharacter* ControlledPawn) const;
 	void BindControlledCharacter();
 	void UnbindControlledCharacter();
 	void HandleCharacterReady(class APFCharacter* ControlledPawn);
@@ -76,6 +79,7 @@ private:
 	void ViewChange();
 	void Interaction();
 	void ChangeCharacter();
+	void ChangeTestMap();
 	void SpawnTestTwinblastEnemy();
 	void SpawnTestKwangEnemy();
 	FVector CalculateAimPoint(bool* bOutCharacterTargeted = nullptr) const;
@@ -94,6 +98,8 @@ private:
 	void Server_Interaction(class APFCharacter* ControlledPawn);
 	UFUNCTION(Server, Reliable)
 	void Server_ChangeCharacter(class APFCharacter* ControlledPawn);
+	UFUNCTION(Server, Reliable)
+	void Server_ChangeTestMap(class APFCharacter* ControlledPawn);
 	UFUNCTION(Server, Reliable)
 	void Server_SpawnTestEnemy(class APFCharacter* ControlledPawn, bool bSpawnTwinblast);
 	UFUNCTION(Client, Reliable)
@@ -143,6 +149,8 @@ private:
 	class UPFCharacterWidget* SelfHPBar = nullptr;
 	UPROPERTY(Transient)
 	class UPFCrosshairWidget* CrosshairWidget = nullptr;
+	UPROPERTY(Transient)
+	class UPFMinimapWidget* MinimapWidget = nullptr;
 	TWeakObjectPtr<class UPFAttributeSet> HUDAttributeSet;
 
 	friend class APFGameMode;
@@ -155,17 +163,25 @@ private:
 
 	// 인벤토리 창
 	UPROPERTY()
+	TSubclassOf<class UPFInventoryWidget> InventoryWidgetClass;
+	UPROPERTY()
 	class UPFInventoryWidget* InventoryWidget;
 
 	// 스탯 창
 	UPROPERTY()
+	TSubclassOf<class UPFStatWidget> StatWidgetClass;
+	UPROPERTY()
 	class UPFStatWidget* StatWidget = nullptr;
 
 	// 게임 메뉴
+	UPROPERTY()
+	TSubclassOf<class UPFMenuWidget> MenuWidgetClass;
 	UPROPERTY(Transient)
 	class UPFMenuWidget* MenuWidget = nullptr;
 
 	// 부활 대기 UI
+	UPROPERTY()
+	TSubclassOf<class UPFRespawnWidget> RespawnWidgetClass;
 	UPROPERTY(Transient)
 	class UPFRespawnWidget* RespawnWidget = nullptr;
 };

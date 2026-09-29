@@ -21,6 +21,8 @@ public:
 	virtual void Tick(float DeltaTime) override;
 	virtual bool TryGetCombatAim(FVector& OutAimPoint) override;
 	float GetAimPitch() const;
+	float GetTargetSearchRadius() const { return TargetSearchRadius; }
+	void RememberShrubAttacker(APFCharacter* Attacker);
 	bool IsPathJumpBlocked() const;
 	void GetExcludedJumpLinks(TSet<FNavLinkId>& OutLinks) const;
 	void BeginNavigationJump(UObject* Link, const FVector& Destination);
@@ -75,11 +77,16 @@ protected:
 	// 추적 대상 플레이어
 	UPROPERTY(Transient)
 	TWeakObjectPtr<APFCharacter> TargetCharacter;
+	// 감지 범위 이탈까지 기억하는 은신 중 공격자
+	TSet<TWeakObjectPtr<const APFCharacter>> RevealedAttackers;
 
 	FPFCharacterAISettings CombatSettings;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Movement", meta = (ClampMin = "0.0"))
 	float RotationInterpSpeed = 10.f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Target", meta = (ClampMin = "0.0", Units = "cm"))
+	float TargetSearchRadius = 3000.f;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Target", meta = (ClampMin = "0.05"))
 	float TargetRefreshInterval = 0.5f;
@@ -88,10 +95,10 @@ protected:
 	float AttackCommandInterval = 0.1f;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Navi", meta = (ClampMin = "0.05"))
-	float PathTargetCheckInterval = 0.25f;
+	float PathTargetCheckInterval = 0.5f;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Navi", meta = (ClampMin = "1.0"))
-	float PathTargetRefreshDistance = 50.f;
+	float PathTargetRefreshDistance = 100.f;
 
 private:
 	// 조종 중인 캐릭터
