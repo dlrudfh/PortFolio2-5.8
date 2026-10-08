@@ -4,6 +4,28 @@
 #include "AI/Navigation/NavigationRelevantData.h"
 #include "Engine/StaticMesh.h"
 
+#if WITH_EDITOR
+void UPFEnvironmentInstancesComponent::BeginPlay()
+{
+	Super::BeginPlay();
+	const UStaticMesh* Mesh = GetStaticMesh();
+	if (Mesh && !Mesh->IsCompiling())
+	{
+		// 맵 초기화가 끝난 뒤 인스턴스의 구운 조명 좌표 갱신
+		SetBakedLightingDataChangedAll();
+	}
+}
+
+void UPFEnvironmentInstancesComponent::PostStaticMeshCompilation()
+{
+	Super::PostStaticMeshCompilation();
+	if (HasBegunPlay())
+	{
+		SetBakedLightingDataChangedAll();
+	}
+}
+#endif
+
 void UPFEnvironmentInstancesComponent::GetNavigationData(FNavigationRelevantData& Data) const
 {
 	Super::GetNavigationData(Data);

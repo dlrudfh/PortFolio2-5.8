@@ -4,6 +4,7 @@
 #include "GAS/Attributes/PFAttributeSet.h"
 #include "GAS/PFGameplayTags.h"
 #include "NativeGameplayTags.h"
+#include "System/Framework/PFGameInstance.h"
 
 // 스탯, 전투 수치 전달용 태그
 UE_DEFINE_GAMEPLAY_TAG_STATIC(TAG_PF_Data_Level, "Data.Stat.Level");
@@ -55,23 +56,29 @@ namespace PFGE_StatGameplayEffectPrivate
 	// 효과 Spec 생성
 	FGameplayEffectSpecHandle MakeSpec(UAbilitySystemComponent* SourceASC, TSubclassOf<UGameplayEffect> EffectClass)
 	{
-		return SourceASC
-			? SourceASC->MakeOutgoingSpec(EffectClass, 1.f, SourceASC->MakeEffectContext())
-			: FGameplayEffectSpecHandle();
+		return SourceASC->MakeOutgoingSpec(EffectClass, 1.f, SourceASC->MakeEffectContext());
 	}
 
 	// 자신 또는 대상에게 효과 적용
 	FActiveGameplayEffectHandle ApplySpec(UAbilitySystemComponent* SourceASC, UAbilitySystemComponent* TargetASC,
 		const FGameplayEffectSpecHandle& SpecHandle)
 	{
-		if (!SourceASC || !TargetASC || !SpecHandle.Data.IsValid())
-		{
-			return FActiveGameplayEffectHandle();
-		}
-
 		return SourceASC == TargetASC
 			? SourceASC->ApplyGameplayEffectSpecToSelf(*SpecHandle.Data.Get())
 			: SourceASC->ApplyGameplayEffectSpecToTarget(*SpecHandle.Data.Get(), TargetASC);
+	}
+
+	// 양수 수치가 전달되는 획득, 회복 효과 적용
+	bool ApplyAmount(UAbilitySystemComponent* TargetASC, TSubclassOf<UGameplayEffect> EffectClass,
+		const FGameplayTag& DataTag, float Amount)
+	{
+		if (!TargetASC || Amount <= 0.f)
+		{
+			return false;
+		}
+		FGameplayEffectSpecHandle SpecHandle = MakeSpec(TargetASC, EffectClass);
+		SpecHandle.Data->SetSetByCallerMagnitude(DataTag, Amount);
+		return ApplySpec(TargetASC, TargetASC, SpecHandle).WasSuccessfullyApplied();
 	}
 }
 
@@ -115,7 +122,6 @@ UPFGE_Heal::UPFGE_Heal()
 	DurationPolicy = EGameplayEffectDurationType::Instant;
 	PFGE_StatGameplayEffectPrivate::AddSetByCallerModifier(
 		*this, UPFAttributeSet::GetHealthAttribute(), EGameplayModOp::Additive, TAG_PF_Data_Heal);
-	PFGE_StatGameplayEffectPrivate::AddGameplayCue(*this, PFGameplayTags::GameplayCue_Item_Use_HP);
 }
 
 UPFGE_RestoreMana::UPFGE_RestoreMana()
@@ -123,7 +129,6 @@ UPFGE_RestoreMana::UPFGE_RestoreMana()
 	DurationPolicy = EGameplayEffectDurationType::Instant;
 	PFGE_StatGameplayEffectPrivate::AddSetByCallerModifier(
 		*this, UPFAttributeSet::GetManaAttribute(), EGameplayModOp::Additive, TAG_PF_Data_ManaRestore);
-	PFGE_StatGameplayEffectPrivate::AddGameplayCue(*this, PFGameplayTags::GameplayCue_Item_Use_MP);
 }
 
 UPFGE_AddCoin::UPFGE_AddCoin()
@@ -131,7 +136,13 @@ UPFGE_AddCoin::UPFGE_AddCoin()
 	DurationPolicy = EGameplayEffectDurationType::Instant;
 	PFGE_StatGameplayEffectPrivate::AddSetByCallerModifier(
 		*this, UPFAttributeSet::GetCoinAttribute(), EGameplayModOp::Additive, TAG_PF_Data_Coin);
-	PFGE_StatGameplayEffectPrivate::AddGameplayCue(*this, PFGameplayTags::GameplayCue_Item_Use_Coin);
+}
+
+UPFGE_CoinCost::UPFGE_CoinCost()
+{
+	DurationPolicy = EGameplayEffectDurationType::Instant;
+	PFGE_StatGameplayEffectPrivate::AddSetByCallerModifier(
+		*this, UPFAttributeSet::GetCoinAttribute(), EGameplayModOp::Additive, TAG_PF_Data_Coin);
 }
 
 UPFGE_AddExperience::UPFGE_AddExperience()
@@ -180,26 +191,40 @@ UPFGE_AttackPowerUpgrade::UPFGE_AttackPowerUpgrade()
 	PFGE_StatGameplayEffectPrivate::AddConstantModifier(*this, UPFAttributeSet::GetStatPointAttribute(), EGameplayModOp::Additive, -1.f);
 }
 
-// 초기 스탯 효과 적용
-bool FPFGE_StatGameplayEffects::InitializeStats(UAbilitySystemComponent* TargetASC, float Level, float Experience,
-	float Health, float MaxHealth, float Mana, float MaxMana, float AttackPower, float Coin, float StatPoint)
+FPFStatValues::FPFStatValues(const UPFAttributeSet& Attributes)
+	: Level(Attributes.GetLevel()),
+	Experience(Attributes.GetExperience()),
+	Health(Attributes.GetHealth()),
+	MaxHealth(Attributes.GetMaxHealth()),
+	Mana(Attributes.GetMana()),
+	MaxMana(Attributes.GetMaxMana()),
+	AttackPower(Attributes.GetAttackPower()),
+	Coin(Attributes.GetCoin()),
+	StatPoint(Attributes.GetStatPoint())
 {
-	FGameplayEffectSpecHandle SpecHandle = PFGE_StatGameplayEffectPrivate::MakeSpec(TargetASC, UPFGE_InitializeStats::StaticClass());
-	if (!SpecHandle.Data.IsValid())
-	{
-		return false;
-	}
+}
 
+FPFStatValues::FPFStatValues(const FPFCharacterData& Data)
+	: Level(static_cast<float>(Data.Level)), Experience(static_cast<float>(Data.CurExp)), Health(Data.MaxHP), MaxHealth(Data.MaxHP),
+	Mana(Data.MaxMP), MaxMana(Data.MaxMP), AttackPower(Data.Damage)
+{
+}
+
+// 초기 스탯 효과 적용
+bool FPFGE_StatGameplayEffects::InitializeStats(UAbilitySystemComponent* TargetASC, const FPFStatValues& Values)
+{
+	if (!TargetASC) return false;
+	FGameplayEffectSpecHandle SpecHandle = PFGE_StatGameplayEffectPrivate::MakeSpec(TargetASC, UPFGE_InitializeStats::StaticClass());
 	// 초기 스탯 수치 전달
-	SpecHandle.Data->SetSetByCallerMagnitude(TAG_PF_Data_Level, Level);
-	SpecHandle.Data->SetSetByCallerMagnitude(TAG_PF_Data_Experience, Experience);
-	SpecHandle.Data->SetSetByCallerMagnitude(TAG_PF_Data_Coin, Coin);
-	SpecHandle.Data->SetSetByCallerMagnitude(TAG_PF_Data_StatPoint, StatPoint);
-	SpecHandle.Data->SetSetByCallerMagnitude(TAG_PF_Data_Health, Health);
-	SpecHandle.Data->SetSetByCallerMagnitude(TAG_PF_Data_MaxHealth, MaxHealth);
-	SpecHandle.Data->SetSetByCallerMagnitude(TAG_PF_Data_Mana, Mana);
-	SpecHandle.Data->SetSetByCallerMagnitude(TAG_PF_Data_MaxMana, MaxMana);
-	SpecHandle.Data->SetSetByCallerMagnitude(TAG_PF_Data_AttackPower, AttackPower);
+	SpecHandle.Data->SetSetByCallerMagnitude(TAG_PF_Data_Level, Values.Level);
+	SpecHandle.Data->SetSetByCallerMagnitude(TAG_PF_Data_Experience, Values.Experience);
+	SpecHandle.Data->SetSetByCallerMagnitude(TAG_PF_Data_Coin, Values.Coin);
+	SpecHandle.Data->SetSetByCallerMagnitude(TAG_PF_Data_StatPoint, Values.StatPoint);
+	SpecHandle.Data->SetSetByCallerMagnitude(TAG_PF_Data_Health, Values.Health);
+	SpecHandle.Data->SetSetByCallerMagnitude(TAG_PF_Data_MaxHealth, Values.MaxHealth);
+	SpecHandle.Data->SetSetByCallerMagnitude(TAG_PF_Data_Mana, Values.Mana);
+	SpecHandle.Data->SetSetByCallerMagnitude(TAG_PF_Data_MaxMana, Values.MaxMana);
+	SpecHandle.Data->SetSetByCallerMagnitude(TAG_PF_Data_AttackPower, Values.AttackPower);
 	return PFGE_StatGameplayEffectPrivate::ApplySpec(TargetASC, TargetASC, SpecHandle).WasSuccessfullyApplied();
 }
 
@@ -212,7 +237,7 @@ bool FPFGE_StatGameplayEffects::ApplyDamage(UAbilitySystemComponent* SourceASC, 
 	{
 		return false;
 	}
-	if (TargetASC->HasMatchingGameplayTag(FGameplayTag::RequestGameplayTag(FName("Character.State.Shield")))
+	if (TargetASC->HasMatchingGameplayTag(PFGameplayTags::Character_State_Shield)
 		|| TargetASC->HasMatchingGameplayTag(PFGameplayTags::Character_State_Invulnerable))
 	{
 		return false;
@@ -241,11 +266,6 @@ bool FPFGE_StatGameplayEffects::ApplyDamage(UAbilitySystemComponent* SourceASC, 
 	// 피해량을 효과 Spec으로 전달
 	FGameplayEffectSpecHandle SpecHandle = EffectiveSourceASC->MakeOutgoingSpec(
 		UPFGE_Damage::StaticClass(), 1.f, EffectContext);
-	if (!SpecHandle.Data.IsValid())
-	{
-		return false;
-	}
-
 	SpecHandle.Data->SetSetByCallerMagnitude(TAG_PF_Data_AttackPower, FMath::Max(0.f, AttackPower));
 	SpecHandle.Data->SetSetByCallerMagnitude(TAG_PF_Data_Damage, Damage);
 	return PFGE_StatGameplayEffectPrivate::ApplySpec(EffectiveSourceASC, TargetASC, SpecHandle).WasSuccessfullyApplied();
@@ -254,13 +274,9 @@ bool FPFGE_StatGameplayEffects::ApplyDamage(UAbilitySystemComponent* SourceASC, 
 // 실드 효과, 상태 태그 적용
 bool FPFGE_StatGameplayEffects::ApplyShield(UAbilitySystemComponent* TargetASC)
 {
+	if (!TargetASC) return false;
 	FGameplayEffectSpecHandle SpecHandle = PFGE_StatGameplayEffectPrivate::MakeSpec(TargetASC, UPFGE_Shield::StaticClass());
-	if (!SpecHandle.Data.IsValid())
-	{
-		return false;
-	}
-
-	SpecHandle.Data->DynamicGrantedTags.AddTag(FGameplayTag::RequestGameplayTag(FName("Character.State.Shield")));
+	SpecHandle.Data->DynamicGrantedTags.AddTag(PFGameplayTags::Character_State_Shield);
 	return PFGE_StatGameplayEffectPrivate::ApplySpec(TargetASC, TargetASC, SpecHandle).WasSuccessfullyApplied();
 }
 
@@ -268,18 +284,8 @@ bool FPFGE_StatGameplayEffects::ApplyShield(UAbilitySystemComponent* TargetASC)
 FActiveGameplayEffectHandle FPFGE_StatGameplayEffects::ApplyItemCooldown(UAbilitySystemComponent* TargetASC,
 	const FGameplayTag& CooldownTag, float Duration)
 {
-	if (!TargetASC || !CooldownTag.IsValid() || Duration <= 0.f)
-	{
-		return FActiveGameplayEffectHandle();
-	}
-
 	FGameplayEffectSpecHandle SpecHandle = PFGE_StatGameplayEffectPrivate::MakeSpec(
 		TargetASC, UPFGE_ItemCooldown::StaticClass());
-	if (!SpecHandle.Data.IsValid())
-	{
-		return FActiveGameplayEffectHandle();
-	}
-
 	SpecHandle.Data->SetDuration(Duration, true);
 	SpecHandle.Data->DynamicGrantedTags.AddTag(CooldownTag);
 	return PFGE_StatGameplayEffectPrivate::ApplySpec(TargetASC, TargetASC, SpecHandle);
@@ -288,73 +294,33 @@ FActiveGameplayEffectHandle FPFGE_StatGameplayEffects::ApplyItemCooldown(UAbilit
 // 체력 회복 효과 적용
 bool FPFGE_StatGameplayEffects::ApplyHeal(UAbilitySystemComponent* TargetASC, float Amount)
 {
-	if (!TargetASC || Amount <= 0.f)
-	{
-		return false;
-	}
-
-	FGameplayEffectSpecHandle SpecHandle = PFGE_StatGameplayEffectPrivate::MakeSpec(TargetASC, UPFGE_Heal::StaticClass());
-	if (!SpecHandle.Data.IsValid())
-	{
-		return false;
-	}
-
-	SpecHandle.Data->SetSetByCallerMagnitude(TAG_PF_Data_Heal, Amount);
-	return PFGE_StatGameplayEffectPrivate::ApplySpec(TargetASC, TargetASC, SpecHandle).WasSuccessfullyApplied();
+	return PFGE_StatGameplayEffectPrivate::ApplyAmount(TargetASC, UPFGE_Heal::StaticClass(), TAG_PF_Data_Heal, Amount);
 }
 
 // 마나 회복 효과 적용
 bool FPFGE_StatGameplayEffects::ApplyManaRestore(UAbilitySystemComponent* TargetASC, float Amount)
 {
-	if (!TargetASC || Amount <= 0.f)
-	{
-		return false;
-	}
-
-	FGameplayEffectSpecHandle SpecHandle = PFGE_StatGameplayEffectPrivate::MakeSpec(TargetASC, UPFGE_RestoreMana::StaticClass());
-	if (!SpecHandle.Data.IsValid())
-	{
-		return false;
-	}
-
-	SpecHandle.Data->SetSetByCallerMagnitude(TAG_PF_Data_ManaRestore, Amount);
-	return PFGE_StatGameplayEffectPrivate::ApplySpec(TargetASC, TargetASC, SpecHandle).WasSuccessfullyApplied();
+	return PFGE_StatGameplayEffectPrivate::ApplyAmount(TargetASC, UPFGE_RestoreMana::StaticClass(), TAG_PF_Data_ManaRestore, Amount);
 }
 
 // 코인 획득 효과 적용
 bool FPFGE_StatGameplayEffects::ApplyCoin(UAbilitySystemComponent* TargetASC, float Amount)
 {
-	if (!TargetASC || Amount <= 0.f)
-	{
-		return false;
-	}
+	return PFGE_StatGameplayEffectPrivate::ApplyAmount(TargetASC, UPFGE_AddCoin::StaticClass(), TAG_PF_Data_Coin, Amount);
+}
 
-	FGameplayEffectSpecHandle SpecHandle = PFGE_StatGameplayEffectPrivate::MakeSpec(TargetASC, UPFGE_AddCoin::StaticClass());
-	if (!SpecHandle.Data.IsValid())
-	{
-		return false;
-	}
-
-	SpecHandle.Data->SetSetByCallerMagnitude(TAG_PF_Data_Coin, Amount);
+// 검증된 구매 비용 적용
+bool FPFGE_StatGameplayEffects::TryApplyCoinCost(UAbilitySystemComponent* TargetASC, float Cost)
+{
+	FGameplayEffectSpecHandle SpecHandle = PFGE_StatGameplayEffectPrivate::MakeSpec(TargetASC, UPFGE_CoinCost::StaticClass());
+	SpecHandle.Data->SetSetByCallerMagnitude(TAG_PF_Data_Coin, -Cost);
 	return PFGE_StatGameplayEffectPrivate::ApplySpec(TargetASC, TargetASC, SpecHandle).WasSuccessfullyApplied();
 }
 
 // 경험치 획득 효과 적용
 bool FPFGE_StatGameplayEffects::ApplyExperience(UAbilitySystemComponent* TargetASC, float Amount)
 {
-	if (!TargetASC || Amount <= 0.f)
-	{
-		return false;
-	}
-
-	FGameplayEffectSpecHandle SpecHandle = PFGE_StatGameplayEffectPrivate::MakeSpec(TargetASC, UPFGE_AddExperience::StaticClass());
-	if (!SpecHandle.Data.IsValid())
-	{
-		return false;
-	}
-
-	SpecHandle.Data->SetSetByCallerMagnitude(TAG_PF_Data_Experience, Amount);
-	return PFGE_StatGameplayEffectPrivate::ApplySpec(TargetASC, TargetASC, SpecHandle).WasSuccessfullyApplied();
+	return PFGE_StatGameplayEffectPrivate::ApplyAmount(TargetASC, UPFGE_AddExperience::StaticClass(), TAG_PF_Data_Experience, Amount);
 }
 
 // 잔여 마나 확인 후 소모
@@ -370,11 +336,6 @@ bool FPFGE_StatGameplayEffects::TryApplyManaCost(UAbilitySystemComponent* Target
 	}
 
 	FGameplayEffectSpecHandle SpecHandle = PFGE_StatGameplayEffectPrivate::MakeSpec(TargetASC, UPFGE_ManaCost::StaticClass());
-	if (!SpecHandle.Data.IsValid())
-	{
-		return false;
-	}
-
 	SpecHandle.Data->SetSetByCallerMagnitude(TAG_PF_Data_ManaCost, -Cost);
 	return PFGE_StatGameplayEffectPrivate::ApplySpec(TargetASC, TargetASC, SpecHandle).WasSuccessfullyApplied();
 }
@@ -382,6 +343,7 @@ bool FPFGE_StatGameplayEffects::TryApplyManaCost(UAbilitySystemComponent* Target
 // 마나 재생 효과 적용
 FActiveGameplayEffectHandle FPFGE_StatGameplayEffects::ApplyManaRegen(UAbilitySystemComponent* TargetASC)
 {
+	if (!TargetASC) return FActiveGameplayEffectHandle();
 	const FGameplayEffectSpecHandle SpecHandle = PFGE_StatGameplayEffectPrivate::MakeSpec(TargetASC, UPFGE_ManaRegen::StaticClass());
 	return PFGE_StatGameplayEffectPrivate::ApplySpec(TargetASC, TargetASC, SpecHandle);
 }
@@ -390,7 +352,7 @@ FActiveGameplayEffectHandle FPFGE_StatGameplayEffects::ApplyManaRegen(UAbilitySy
 bool FPFGE_StatGameplayEffects::ApplyStatUpgrade(UAbilitySystemComponent* TargetASC, const UPFAttributeSet* AttributeSet,
 	EPFStatUpgradeType UpgradeType)
 {
-	if (!TargetASC || !AttributeSet || AttributeSet->GetStatPoint() < 1.f)
+	if (AttributeSet->GetStatPoint() < 1.f)
 	{
 		return false;
 	}

@@ -3,13 +3,24 @@
 #include "PortFolio/PortFolio.h"
 
 #include "Character/PFCharacter.h"
-#include "System/Framework/PFGameInstance.h"
+#include "Engine/GameInstance.h"
+#include "GameplayTagContainer.h"
 #include "NiagaraComponent.h"
 #include "GameFramework/Actor.h"
 #include "NiagaraFunctionLibrary.h"
 #include "Components/SphereComponent.h"
 
 #include "PFItem.generated.h"
+
+// 아이템 가격, 효과, 표시 정보
+struct FPFItemDefinition
+{
+	int32 Price;
+	float Amount;
+	const TCHAR* IconPath;
+	FGameplayTag CooldownTag;
+	ENIAGARAID NiagaraID;
+};
 
 // 획득용 아이템 클래스
 UCLASS(meta=(PrioritizeCategories="Component"))
@@ -30,10 +41,9 @@ public:
 
 public:	
 	APFItem();
-	void SetItemData(int ItemID);
+	static const FPFItemDefinition* GetDefinition(int32 ItemID);
+	void SetItemData(int ItemID, class APFPlayerController* InChestOpener = nullptr);
 	void UseItem(APFCharacter* Character);
-	UFUNCTION(Server, Reliable, WithValidation)
-	void Server_SetItemData(int ItemID);
 
 	UFUNCTION()
 	void OnRep_NiagaraID();
@@ -42,17 +52,16 @@ public:
 	void ActivateNiagaraEffect();
 
 protected:
+	virtual void BeginPlay() override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	UFUNCTION()
 	virtual void OnBeginOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor,
 		UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult);
-	UFUNCTION(Server, Reliable)
-	void Server_UseItem(APFCharacter* Character);
 
 private:
-	// 아이템 데이터 참조
-	FPFItemData* ItemData;
+	// 보상 상자를 연 플레이어
+	TWeakObjectPtr<class APFPlayerController> ChestOpener;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component", meta = (AllowPrivateAccess = "true"))
 	USphereComponent* CollisionCom;

@@ -4,6 +4,20 @@
 
 namespace PFGameplayTags
 {
+	// 이동, 궁극기, 전투 연출 태그
+	PORTFOLIO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Character_Block_Jump);
+	PORTFOLIO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Character_Block_Move);
+	PORTFOLIO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Character_Block_Ultimate);
+	PORTFOLIO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Character_Ability_Jump);
+	PORTFOLIO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Character_Ability_Ultimate);
+	PORTFOLIO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(GameplayCue_Character_Attack_Kwang_Normal_Montage);
+	PORTFOLIO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(GameplayCue_Character_Attack_Twinblast_Normal_Montage);
+	PORTFOLIO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(GameplayCue_Character_Attack_Twinblast_Normal_Shoot);
+	PORTFOLIO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(GameplayCue_Character_Attack_Twinblast_Ultimate_Montage);
+	PORTFOLIO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(GameplayCue_Character_Attack_Twinblast_Ultimate_Shoot);
+	PORTFOLIO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Character_Ability_Ultimate_Twinblast);
+	PORTFOLIO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Character_State_Shield);
+
 	// 공격 어빌리티 태그
 	PORTFOLIO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Character_Ability_Attack);
 	PORTFOLIO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Character_Ability_Attack_Kwang);

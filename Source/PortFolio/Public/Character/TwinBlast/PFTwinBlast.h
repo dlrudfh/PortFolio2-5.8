@@ -72,6 +72,7 @@ private:
 	void GameplayCue_Character_Attack_Twinblast_Ultimate_Shoot(EGameplayCueEvent::Type EventType, const FGameplayCueParameters& Parameters);
 
 	void StartUltShoulderEffect();
+	void PlayShotEffects(bool bShootLeft, bool bUltimate = false);
 	void StopUltShoulderEffect();
 	virtual void OnMontageEnd(UAnimMontage* Montage, bool bInterrupted) override;
 	virtual void PostHitProcessing() override;

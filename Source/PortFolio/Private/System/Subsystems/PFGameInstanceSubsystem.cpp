@@ -1,17 +1,96 @@
 #include "System/Subsystems/PFGameInstanceSubsystem.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Engine/SkeletalMesh.h"
+#include "Animation/AnimInstance.h"
 #include "Engine/AssetManager.h"
+#include "Engine/StreamableManager.h"
+
+namespace
+{
+    // 공용 에셋 인덱스, 객체 유효성 확인
+    template <typename AssetType>
+    AssetType* FindAsset(const TArray<AssetType*>& Assets, int32 Index)
+    {
+        if (!Assets.IsValidIndex(Index))
+        {
+            PFLOG(Warning, TEXT("Invalid asset index: %d"), Index);
+            return nullptr;
+        }
+        if (!IsValid(Assets[Index]))
+        {
+            PFLOG(Warning, TEXT("Asset does not exist: %d"), Index);
+            return nullptr;
+        }
+        return Assets[Index];
+    }
+}
 
 void UPFGameInstanceSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
     Super::Initialize(Collection);
-    LoadStaticData();
-}
-
-// 공용 에셋 로드
-void UPFGameInstanceSubsystem::LoadStaticData()
-{
+    if (!IsRunningDedicatedServer())
+        ShrubMaterialLoad = UAssetManager::GetStreamableManager().RequestAsyncLoad(
+            FSoftObjectPath(TEXT("/Game/GameData/Materials/ShrubStealth/DA_ShrubMaterials.DA_ShrubMaterials")));
     LoadStaticMeshes();
     LoadStaticNiagaras();
+}
+
+void UPFGameInstanceSubsystem::Deinitialize()
+{
+    if (ShrubMaterialLoad.IsValid()) ShrubMaterialLoad->CancelHandle();
+    ShrubMaterialLoad.Reset();
+    Super::Deinitialize();
+}
+
+// 캐릭터 공통 정의 조회
+const FPFCharacterDefinition* UPFGameInstanceSubsystem::GetCharacterDefinition(ECHARACTER Character)
+{
+    static const FPFCharacterDefinition Definitions[] =
+    {
+        {TEXT("Twinblast"),
+            TEXT("/Game/ParagonTwinblast/Characters/Heroes/TwinBlast/Meshes/TwinBlast.TwinBlast"),
+            TEXT("/Game/ParagonTwinblast/Characters/Heroes/TwinBlast/TwinBlast_Blueprint.TwinBlast_Blueprint_C"),
+            TEXT("/Game/GameData/Character/Twinblast.Twinblast_C")},
+        {TEXT("Kwang"),
+            TEXT("/Game/ParagonKwang/Characters/Heroes/Kwang/Meshes/Kwang_GDC.Kwang_GDC"),
+            TEXT("/Game/ParagonKwang/Characters/Heroes/Kwang/Kwang_Blueprint.Kwang_Blueprint_C"),
+            TEXT("/Game/GameData/Character/Kwang.Kwang_C")}
+    };
+    static_assert(UE_ARRAY_COUNT(Definitions) == etoi(CHARACTER_END));
+    const int32 Index = etoi(Character);
+    return Index >= 0 && Index < UE_ARRAY_COUNT(Definitions) ? &Definitions[Index] : nullptr;
+}
+
+// 캐릭터 메시, 애니메이션 적용
+void UPFGameInstanceSubsystem::ApplyCharacterMesh(USkeletalMeshComponent* Mesh, ECHARACTER Character, bool bRequired)
+{
+    const FPFCharacterDefinition* Definition = GetCharacterDefinition(Character);
+    if (!Definition)
+    {
+        return;
+    }
+    USkeletalMesh* Asset = LoadObject<USkeletalMesh>(nullptr, Definition->MeshPath);
+    UClass* Animation = LoadClass<UAnimInstance>(nullptr, Definition->AnimationPath);
+    if (Asset)
+    {
+        Mesh->SetSkeletalMesh(Asset);
+    }
+    Mesh->SetAnimationMode(EAnimationMode::AnimationBlueprint);
+    if (Animation)
+    {
+        Mesh->SetAnimInstanceClass(Animation);
+    }
+    if (!Asset || !Animation)
+    {
+        if (bRequired)
+        {
+            PFLOG(Fatal, TEXT("Character assets missing: %s"), Definition->Name);
+        }
+        else
+        {
+            PFLOG(Warning, TEXT("Character assets missing: %s"), Definition->Name);
+        }
+    }
 }
 
 // 공용 메시 로드
@@ -38,43 +117,11 @@ void UPFGameInstanceSubsystem::LoadStaticNiagaras()
 // 메시 번호로 에셋 조회
 UStaticMesh* UPFGameInstanceSubsystem::GetStaticMesh(EMESHID MeshID)
 {
-    int Index = etoi(MeshID);
-
-    if (!StaticMeshes.IsValidIndex(Index))
-    {
-        PFLOG(Warning, TEXT("Invalid Index : %d"), Index);
-        return nullptr;
-    }
-
-    UStaticMesh* Mesh = StaticMeshes[Index];
-
-    if (!IsValid(Mesh))
-    {
-        PFLOG(Warning, TEXT("Mesh doesn't exist : %d"), Index);
-        return nullptr;
-    }
-
-    return Mesh;
+    return FindAsset(StaticMeshes, etoi(MeshID));
 }
 
 // 이펙트 번호로 에셋 조회
 UNiagaraSystem* UPFGameInstanceSubsystem::GetStaticNiagara(ENIAGARAID NiagaraID)
 {
-    int Index = etoi(NiagaraID);
-
-    if (!StaticNiagaras.IsValidIndex(Index))
-    {
-        PFLOG(Warning, TEXT("Invalid Index : %d"), Index);
-        return nullptr;
-    }
-
-    UNiagaraSystem* Niagara = StaticNiagaras[Index];
-
-    if (!IsValid(Niagara))
-    {
-        PFLOG(Warning, TEXT("Niagara doesn't exist : %d"), Index);
-        return nullptr;
-    }
-
-    return Niagara;
+    return FindAsset(StaticNiagaras, etoi(NiagaraID));
 }

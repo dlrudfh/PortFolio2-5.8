@@ -1,5 +1,10 @@
 #include "Character/PFCharacter.h"
+#include "Engine/LocalPlayer.h"
+#include "Engine/GameViewportClient.h"
+#include "Campaign/PFCampaignDirector.h"
+#include "Campaign/PFCampaignEnemyController.h"
 #include "Character/PFCharacterMovementComponent.h"
+#include "Character/PFFirstPersonMeshComponent.h"
 #include "Character/PFShrubStealthComponent.h"
 
 #include "UI/HUD/PFCharacterWidget.h"
@@ -7,6 +12,7 @@
 #include "System/Framework/PFPlayerState.h"
 #include "System/Framework/PFPlayerController.h"
 #include "System/Framework/PFGameMode.h"
+#include "System/Framework/PFSessionGameState.h"
 #include "System/Framework/PFEnemyAIController.h"
 #include "System/Subsystems/PFGameInstanceSubsystem.h"
 #include "Character/PFCombatAimProvider.h"
@@ -128,13 +134,13 @@ bool APFCharacter::IsDeadCharacter() const
 // 수풀 은신 여부 조회
 bool APFCharacter::IsShrubConcealed() const
 {
-	return ShrubStealth && ShrubStealth->IsConcealed();
+	return ShrubStealth->IsConcealed();
 }
 
 // 공격 시 수풀 은신 해제
 void APFCharacter::BreakShrubConcealmentForAttack()
 {
-	if (ShrubStealth) ShrubStealth->BreakForAttack();
+	ShrubStealth->BreakForAttack();
 }
 
 void APFCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -171,7 +177,7 @@ void APFCharacter::SetReplicatedStateTag(const FGameplayTag& StateTag, bool bEna
 // 상태 태그 이벤트 연결
 void APFCharacter::BindStateTagEvents()
 {
-	if (!ASC || BoundStateASC.Get() == ASC)
+	if (BoundStateASC.Get() == ASC)
 	{
 		return;
 	}
@@ -209,13 +215,14 @@ void APFCharacter::UnbindStateTagEvents()
 // 사망 상태 반영
 void APFCharacter::DeadTagChanged(FGameplayTag StateTag, int32 NewCount)
 {
-	if (ShrubStealth) ShrubStealth->RefreshState();
+	ShrubStealth->RefreshState();
 	if (NewCount > 0) EndJumpPadFlight();
 	SetActorEnableCollision(NewCount == 0);
-	if (NewCount > 0 && PFAnim)
+	if (NewCount > 0)
 	{
 		PFAnim->Dead();
 	}
+	UpdateFirstPersonPresentation();
 }
 
 // 궁극기 상태 처리 (파생 클래스 구현)
@@ -229,7 +236,7 @@ void APFCharacter::BeginPlay()
 
 	// 서버에서 등장 연출 상태 시작
 	UWorld* World = GetWorld();
-	if (HasAuthority() && World
+	if (HasAuthority()
 		&& !FPackageName::GetShortName(World->GetMapName()).Contains(TEXT("Title")))
 	{
 		bLevelStartActive = true;
@@ -256,21 +263,11 @@ void APFCharacter::InitAbilityActorInfo()
 	}
 	if (IsPlayerCharacter())
 	{
-		if (!GetPlayerState<APFPlayerState>())
-		{
-			return;
-		}
-	}
-	if (APFPlayerState* PFPlayerState = IsPlayerCharacter() ? GetPlayerState<APFPlayerState>() : nullptr)
-	{
+		APFPlayerState* PFPlayerState = GetPlayerState<APFPlayerState>();
+		if (!PFPlayerState) return;
 		// PlayerState의 ASC, 스탯 참조
 		ASC = PFPlayerState->GetAbilitySystemComponent();
 		AttributeSet = PFPlayerState->GetAttributeSet();
-		if (!ASC || !AttributeSet)
-		{
-			return;
-		}
-
 		// 플레이어 ASC 연결 및 스탯 초기화
 		ASC->InitAbilityActorInfo(PFPlayerState, this);
 		PFPlayerState->InitializeGASStats();
@@ -291,7 +288,7 @@ void APFCharacter::InitAbilityActorInfo()
 	// 등장 몽타주에 맞춰 무적 설정
 	if (HasAuthority())
 	{
-		const UAnimMontage* ActiveMontage = PFAnim ? PFAnim->GetCurrentActiveMontage() : nullptr;
+		const UAnimMontage* ActiveMontage = PFAnim->GetCurrentActiveMontage();
 		const bool bPlayingLevelStart = ActiveMontage && PFAnim->IsLevelStartMontage(ActiveMontage)
 			&& PFAnim->Montage_IsPlaying(ActiveMontage);
 		ASC->SetLooseGameplayTagCount(PFGameplayTags::Character_State_Invulnerable, bPlayingLevelStart ? 1 : 0);
@@ -310,7 +307,7 @@ void APFCharacter::InitAbilityActorInfo()
 // 기본 공격 어빌리티 부여
 void APFCharacter::GiveAttackAbility()
 {
-	if (!HasAuthority() || !ASC || !AttackAbilityClass)
+	if (!HasAuthority() || !AttackAbilityClass)
 	{
 		return;
 	}
@@ -325,11 +322,6 @@ void APFCharacter::GiveAttackAbility()
 // 어빌리티 조회 또는 부여
 FGameplayAbilitySpecHandle APFCharacter::GetOrGiveAbility(TSubclassOf<UGameplayAbility> AbilityClass, int32 AbilityLevel)
 {
-	if (!HasAuthority() || !ASC || !AbilityClass)
-	{
-		return FGameplayAbilitySpecHandle();
-	}
-
 	// 기존 Spec 재사용
 	if (FGameplayAbilitySpec* ExistingSpec = ASC->FindAbilitySpecFromClass(AbilityClass))
 	{
@@ -343,7 +335,7 @@ FGameplayAbilitySpecHandle APFCharacter::GetOrGiveAbility(TSubclassOf<UGameplayA
 // 봇 스탯, 마나 재생 초기화
 void APFCharacter::InitGASStats()
 {
-	if (!HasAuthority() || !ASC || !AttributeSet)
+	if (!HasAuthority())
 	{
 		return;
 	}
@@ -361,17 +353,7 @@ void APFCharacter::InitGASStats()
 		}
 
 		// 초기 스탯 적용
-		bOwnedGASStatsInitialized = FPFGE_StatGameplayEffects::InitializeStats(
-			ASC,
-			static_cast<float>(InitialData->Level),
-			static_cast<float>(InitialData->CurExp),
-			InitialData->MaxHP,
-			InitialData->MaxHP,
-			InitialData->MaxMP,
-			InitialData->MaxMP,
-			InitialData->Damage,
-			0.f,
-			10.f);
+		bOwnedGASStatsInitialized = FPFGE_StatGameplayEffects::InitializeStats(ASC, FPFStatValues(*InitialData));
 	}
 
 	// 마나 재생 중복 적용 방지
@@ -384,7 +366,7 @@ void APFCharacter::InitGASStats()
 // 체력 소진 시 사망 처리 연결
 void APFCharacter::BindAttributeDelegates()
 {
-	if (!AttributeSet || bAttributeDelegatesBound)
+	if (bAttributeDelegatesBound)
 	{
 		return;
 	}
@@ -393,37 +375,19 @@ void APFCharacter::BindAttributeDelegates()
 	bAttributeDelegatesBound = true;
 }
 
-// Loose 태그 카운트 증가
-void APFCharacter::AddTag(FName TagName, int Value)
-{
-	if (ASC)
-	{
-		ASC->AddLooseGameplayTag(FGameplayTag::RequestGameplayTag(TagName), Value);
-	}
-}
 
-// Loose 태그 활성화, 해제
-void APFCharacter::SetTag(FName TagName, bool Value)
-{
-	if (ASC)
-	{
-		ASC->SetLooseGameplayTagCount(FGameplayTag::RequestGameplayTag(TagName), Value);
-	}
-}
 
 // 행동 차단 태그 설정
 void APFCharacter::SetBlockTags(bool bBlocked)
 {
-	if (ASC)
-	{
-		ASC->SetLooseGameplayTagCount(PFGameplayTags::Character_Block_Attack, bBlocked);
-	}
-	SetTag(FName("Character.Block.Jump"), bBlocked);
-	SetTag(FName("Character.Block.Move"), bBlocked);
-	SetTag(FName("Character.Block.Ultimate"), bBlocked);
+	if (!ASC) return;
+	ASC->SetLooseGameplayTagCount(PFGameplayTags::Character_Block_Attack, bBlocked);
+	ASC->SetLooseGameplayTagCount(PFGameplayTags::Character_Block_Jump, bBlocked);
+	ASC->SetLooseGameplayTagCount(PFGameplayTags::Character_Block_Move, bBlocked);
+	ASC->SetLooseGameplayTagCount(PFGameplayTags::Character_Block_Ultimate, bBlocked);
 
 	// 차단 해제 시 유지된 공격 입력 재시도
-	if (!bBlocked && HasAuthority() && IsPlayerCharacter() && ASC)
+	if (!bBlocked && HasAuthority() && IsPlayerCharacter())
 	{
 		const TSubclassOf<UGameplayAbility> InputAbilityClass = GetAttackAbilityClass();
 		FGameplayAbilitySpec* AttackSpec = PressedAttackAbilityHandle.IsValid()
@@ -440,10 +404,11 @@ void APFCharacter::SetBlockTags(bool bBlocked)
 // 이동 차단 여부 조회
 bool APFCharacter::IsMovementBlocked() const
 {
+	if (APFCampaignDirector::BlocksInput(GetController())) return true;
 	const UAbilitySystemComponent* AbilitySystemComponent = GetAbilitySystemComponent();
 	return bJumpPadFlightActive || (AbilitySystemComponent
 		&& AbilitySystemComponent->HasMatchingGameplayTag(
-			FGameplayTag::RequestGameplayTag(FName("Character.Block.Move"))));
+			PFGameplayTags::Character_Block_Move));
 }
 
 // 공중 상태 태그 조회
@@ -452,9 +417,9 @@ bool APFCharacter::HasAirborneTag() const
 	const UAbilitySystemComponent* AbilitySystemComponent = GetAbilitySystemComponent();
 	return AbilitySystemComponent
 		&& (AbilitySystemComponent->HasMatchingGameplayTag(
-			FGameplayTag::RequestGameplayTag(FName("Character.State.Jumping")))
+			PFGameplayTags::Character_State_Jumping)
 			|| AbilitySystemComponent->HasMatchingGameplayTag(
-				FGameplayTag::RequestGameplayTag(FName("Character.State.Falling"))));
+				PFGameplayTags::Character_State_Falling));
 }
 
 // 점프, 낙하 태그 갱신
@@ -462,7 +427,7 @@ void APFCharacter::UpdateAirborneTag()
 {
 	// 상승, 하강 구분
 	const UCharacterMovementComponent* CharacterMovementComponent = GetCharacterMovement();
-	const bool bIsAirborne = CharacterMovementComponent && CharacterMovementComponent->IsFalling();
+	const bool bIsAirborne = CharacterMovementComponent->IsFalling();
 	const bool bIsJumping = bIsAirborne && GetVelocity().Z > 0.f;
 	const bool bIsFalling = bIsAirborne && !bIsJumping;
 
@@ -487,14 +452,13 @@ void APFCharacter::PostInitializeComponents()
 	}
 
 	// 몽타주 종료 이벤트 연결
-	if (PFAnim)
-	{
-		PFAnim->OnMontageEnded.AddDynamic(this, &APFCharacter::OnMontageEnd);
-		PFAnim->DeathEnd.AddUObject(this, &APFCharacter::HandleDeathAnimationEnd);
-	}
+	PFAnim->OnMontageEnded.AddDynamic(this, &APFCharacter::OnMontageEnd);
+	PFAnim->DeathEnd.AddUObject(this, &APFCharacter::HandleDeathAnimationEnd);
 
 	// 캐릭터 충돌 설정
 	GetCapsuleComponent()->SetCollisionProfileName(TEXT("PFCharacter"));
+	GetCapsuleComponent()->SetCollisionResponseToChannel(GetCollisionChannel(TEXT("Chest")), ECR_Overlap);
+	GetCapsuleComponent()->SetCollisionResponseToChannel(GetCollisionChannel(PFCollisionChannelNames::Item), ECR_Overlap);
 	GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
 	GetCapsuleComponent()->SetGenerateOverlapEvents(true);
 }
@@ -502,7 +466,7 @@ void APFCharacter::PostInitializeComponents()
 // 체력바 연결 및 표시 설정
 void APFCharacter::SetHPBar()
 {
-	if (!AttributeSet || !OtherHPBar)
+	if (GetNetMode() == NM_DedicatedServer || !AttributeSet)
 	{
 		return;
 	}
@@ -516,11 +480,6 @@ void APFCharacter::SetHPBar()
 	}
 
 	UWorld* World = GetWorld();
-	if (!World)
-	{
-		return;
-	}
-
 	// 타이틀, 로컬 캐릭터 체력바 숨김
 	const FString LevelName = FPackageName::GetShortName(World->GetMapName());
 	if (LevelName.Contains(TEXT("Title")) || IsLocalPlayerCharacter())
@@ -537,7 +496,7 @@ void APFCharacter::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 	UpdateAirborneTag();
-	if (!IsLocalPlayerCharacter())
+	if (GetNetMode() != NM_DedicatedServer && !IsLocalPlayerCharacter() && OtherHPBar->IsVisible())
 	{
 		TickHPBar();
 	}
@@ -576,8 +535,31 @@ void APFCharacter::Tick(float DeltaTime)
 
 }
 
+void APFCharacter::FellOutOfWorld(const UDamageType& DamageType)
+{
+	if (!HasAuthority() || IsDeadCharacter())
+	{
+		return;
+	}
+	if (!IsValid(ASC) || !IsValid(AttributeSet))
+	{
+		Super::FellOutOfWorld(DamageType);
+		return;
+	}
+
+	GetCharacterMovement()->StopMovementImmediately();
+	GetCharacterMovement()->DisableMovement();
+
+	// 실드, 무적과 무관하게 체력 소진
+	AttributeSet->SetHealth(0.f);
+	AttributeSet->OnHealthChanged.Broadcast();
+	Dead();
+	ForceNetUpdate();
+}
+
 float APFCharacter::TakeDamage(float DamageAmount, FDamageEvent const& DamageEvent, AController* EventInstigator, AActor* DamageCauser)
 {
+	if (const APFCampaignDirector* Director = APFCampaignDirector::Find(GetWorld()); Director && Director->IsEncounterPaused()) return 0.f;
 	const float FinalDamage = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
 	if (HasAuthority() && FinalDamage > 0.f && ASC && AttributeSet)
 	{
@@ -606,6 +588,8 @@ float APFCharacter::TakeDamage(float DamageAmount, FDamageEvent const& DamageEve
 bool APFCharacter::ApplyAttackDamageTo(APFCharacter* Target, float Damage, AActor* Attacker,
 	const UGameplayAbility* AttackAbility, const FHitResult* HitResult)
 {
+	if (APFCampaignDirector::AreFriendly(this, Target)) return false;
+	if (const APFCampaignDirector* Director = APFCampaignDirector::Find(GetWorld()); Director && Director->IsEncounterPaused()) return false;
 	if (!HasAuthority() || !IsValid(Target) || Damage <= 0.f || !ASC || !Target->GetAbilitySystemComponent())
 	{
 		return false;
@@ -630,6 +614,10 @@ bool APFCharacter::ApplyAttackDamageTo(APFCharacter* Target, float Damage, AActo
 		GetDamage(), Damage, this, Attacker, Attacker, FinalAttackAbility, HitResult);
 	if (bApplied)
 	{
+		if (APFCampaignEnemyController* CampaignAI = Cast<APFCampaignEnemyController>(Target->GetController()))
+		{
+			CampaignAI->NotifyDamageFrom(this);
+		}
 		Target->Multicast_PostHitProcessing();
 	}
 	return bApplied;
@@ -664,7 +652,14 @@ float APFCharacter::GetAimPitch() const
 // 공격력 반환
 float APFCharacter::GetDamage() const
 {
-	return AttributeSet ? AttributeSet->GetAttackPower() : 0.f;
+	return AttributeSet ? AttributeSet->GetAttackPower() * AttackDamageMultiplier : 0.f;
+}
+
+// 튜토리얼 플레이어의 전투 피해 차단
+float APFCharacter::GetIncomingDamageMultiplier() const
+{
+	if (IsPlayerCharacter() && APFSessionGameState::IsTraining(GetWorld())) return 0.f;
+	return IncomingDamageMultiplier;
 }
 
 // 이동 방향을 애니메이션에 반영
@@ -690,20 +685,12 @@ void APFCharacter::OnRep_FinalDir()
 			break;
 		}
 	}
-	if (PFAnim)
-	{
-		PFAnim->SetCurrentDir(FinalDir);
-	}
+	PFAnim->SetCurrentDir(FinalDir);
 }
 
 // 체력바 크기, 방향 갱신
 void APFCharacter::TickHPBar()
 {
-	if (!OtherHPBar || IsLocalPlayerCharacter())
-	{
-		return;
-	}
-
 	// 다른 플레이어의 복제된 이름 표시
 	if (UPFCharacterWidget* CharacterWidget = Cast<UPFCharacterWidget>(OtherHPBar->GetUserWidgetObject()))
 	{
@@ -711,11 +698,20 @@ void APFCharacter::TickHPBar()
 		CharacterWidget->SetDisplayUsername(PFPlayerState ? PFPlayerState->GetPlayerName() : FString());
 	}
 
-	// 화면 비율에 맞춰 크기 보정
-	OtherHPBar->SetRelativeScale3D(FVector(1.f, SCREENRATIO.X * 0.25f, SCREENRATIO.Y * 0.25f));
+	APlayerController* PlayerController = GetWorld()->GetFirstPlayerController();
+	ULocalPlayer* LocalPlayer = OtherHPBar->GetOwnerPlayer();
+	if (!LocalPlayer && PlayerController) LocalPlayer = PlayerController->GetLocalPlayer();
+	if (LocalPlayer && LocalPlayer->ViewportClient)
+	{
+		FVector2D ViewportSize;
+		LocalPlayer->ViewportClient->GetViewportSize(ViewportSize);
+		if (ViewportSize.X > 0.f && ViewportSize.Y > 0.f)
+		{
+			OtherHPBar->SetRelativeScale3D(FVector(1.f, ViewportSize.X / 1920.f * .25f, ViewportSize.Y / 1080.f * .25f));
+		}
+	}
 
 	// 카메라 방향으로 회전
-	APlayerController* PlayerController = GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr;
 	if (PlayerController && PlayerController->PlayerCameraManager)
 	{
 		const FVector CameraBackward = -PlayerController->PlayerCameraManager->GetCameraRotation().Vector();
@@ -817,15 +813,12 @@ void APFCharacter::OnLevelStartMontageStarted(UAnimMontage* Montage)
 // 복제된 등장 연출 상태 반영
 void APFCharacter::OnRep_LevelStartActive()
 {
+	UpdateFirstPersonPresentation();
 	if (IsPlayerCharacter())
 	{
 		GetCharacterMovement()->bUseControllerDesiredRotation = !bLevelStartActive;
 	}
 
-	if (!PFAnim)
-	{
-		return;
-	}
 
 	UAnimMontage* ActiveMontage = PFAnim->GetCurrentActiveMontage();
 	const bool bPlayingLevelStart = ActiveMontage && PFAnim->IsLevelStartMontage(ActiveMontage)
@@ -857,6 +850,7 @@ void APFCharacter::OnMontageEnd(UAnimMontage* Montage, bool bInterrupted)
 		if (HasAuthority() && !PFAnim->Montage_IsPlaying(Montage))
 		{
 			bLevelStartActive = false;
+			UpdateFirstPersonPresentation();
 			if (IsPlayerCharacter())
 			{
 				GetCharacterMovement()->bUseControllerDesiredRotation = true;
@@ -900,34 +894,29 @@ void APFCharacter::ActivateJumpAbility()
 }
 
 // 체력 회복
-bool APFCharacter::GetHP(float Value)
+bool APFCharacter::RestoreHealth(float Value)
 {
 	return HasAuthority() && FPFGE_StatGameplayEffects::ApplyHeal(ASC, Value);
 }
 
 // 마나 회복
-bool APFCharacter::GetMP(float Value)
+bool APFCharacter::RestoreMana(float Value)
 {
 	return HasAuthority() && FPFGE_StatGameplayEffects::ApplyManaRestore(ASC, Value);
 }
 
 // 실드 적용
-bool APFCharacter::GetShield()
+bool APFCharacter::GrantShield()
 {
 	return HasAuthority() && FPFGE_StatGameplayEffects::ApplyShield(ASC);
 }
 
 // 코인 획득
-bool APFCharacter::GetCoin(float Value)
+bool APFCharacter::AddCoin(float Value)
 {
 	return HasAuthority() && FPFGE_StatGameplayEffects::ApplyCoin(ASC, Value);
 }
 
-// 아이템 획득 이펙트 전파
-void APFCharacter::PlayPickupNiagara(ENIAGARAID PickupNiagara)
-{
-	Multicast_Niagara(PickupNiagara);
-}
 
 // 마나 조회
 float APFCharacter::GetMana() const
@@ -966,7 +955,7 @@ void APFCharacter::ManageSpeed()
 // 메시 부착 이펙트 생성
 UNiagaraComponent* APFCharacter::SpawnAttachedNiagara(UNiagaraSystem* NiagaraSystem)
 {
-	if (GetNetMode() == NM_DedicatedServer || !IsValid(NiagaraSystem) || !IsValid(GetMesh()))
+	if (GetNetMode() == NM_DedicatedServer || !IsValid(NiagaraSystem))
 	{
 		return nullptr;
 	}
@@ -993,11 +982,6 @@ UNiagaraComponent* APFCharacter::SpawnAttachedNiagara(UNiagaraSystem* NiagaraSys
 	return SpawnedNiagaraCom;
 }
 
-// 아이템 획득 이펙트 재생
-void APFCharacter::Multicast_Niagara_Implementation(ENIAGARAID NiagaraID)
-{
-	SpawnAttachedNiagara(GETNIAGARA(NiagaraID));
-}
 
 // 체력 회복 이펙트 재생
 void APFCharacter::GameplayCue_Item_Use_HP(EGameplayCueEvent::Type EventType, const FGameplayCueParameters&)
@@ -1092,18 +1076,15 @@ void APFCharacter::PressAttackAbilityInput()
 	PressedAttackAbilityHandle = AttackSpec->Handle;
 	ASC->AbilitySpecInputPressed(*AttackSpec);
 
-	// 권한에 따라 공격 활성화, 입력 전송
-	if (HasAuthority())
+	// 공격 활성화, 소유 클라이언트 입력 전송
+	if (!AttackSpec->IsActive())
 	{
-		if (!AttackSpec->IsActive())
-		{
-			ASC->TryActivateAbility(AttackSpec->Handle);
-		}
-		return;
+		ASC->TryActivateAbility(AttackSpec->Handle);
 	}
-
-	ASC->TryActivateAbility(AttackSpec->Handle);
-	ASC->ServerSetInputPressed(AttackSpec->Handle);
+	if (!HasAuthority())
+	{
+		ASC->ServerSetInputPressed(AttackSpec->Handle);
+	}
 }
 
 // 공격 Spec에 해제 입력 전달
@@ -1147,7 +1128,7 @@ void APFCharacter::OnRep_ViewpointFixed()
 // 플레이어 점프, 궁극기 부여
 void APFCharacter::GivePlayerAbilities()
 {
-	if (!HasAuthority() || !IsPlayerCharacter() || !ASC)
+	if (!HasAuthority() || !IsPlayerCharacter())
 	{
 		return;
 	}
@@ -1178,7 +1159,7 @@ void APFCharacter::GivePlayerAbilities()
 // 제어 모드의 카메라, 몸 회전 반영
 void APFCharacter::OnRep_CurrentControlMode()
 {
-	if (!IsPlayerCharacter() || !SpringArm || !PFAnim)
+	if (!IsPlayerCharacter())
 	{
 		return;
 	}
@@ -1186,20 +1167,25 @@ void APFCharacter::OnRep_CurrentControlMode()
 	SpringArm->SetRelativeLocation(SpringArm->GetRelativeLocation() + SpringArm->SocketOffset);
 	SpringArm->SocketOffset = FVector::ZeroVector;
 
-	// 모드별 카메라, 회전 설정
-	switch (CurrentControlMode)
+	// 공통 카메라, 몸 회전 설정
+	if (CurrentControlMode == TOPVIEW || CurrentControlMode == TPS || CurrentControlMode == FPS)
 	{
-	case TOPVIEW:
-		ArmLengthTo = 800.f;
-		ArmRotationTo = FRotator(-45.f, 0.f, 0.f);
 		SpringArm->bUsePawnControlRotation = true;
-		SpringArm->bInheritPitch = false;
 		SpringArm->bInheritRoll = true;
 		SpringArm->bInheritYaw = true;
 		SpringArm->bDoCollisionTest = false;
 		bUseControllerRotationYaw = false;
 		GetCharacterMovement()->bUseControllerDesiredRotation = !bLevelStartActive;
 		GetCharacterMovement()->RotationRate = FRotator(0.f, -1.f, 0.f);
+	}
+
+	// 모드별 카메라, 회전 설정
+	switch (CurrentControlMode)
+	{
+	case TOPVIEW:
+		ArmLengthTo = 800.f;
+		ArmRotationTo = FRotator(-45.f, 0.f, 0.f);
+		SpringArm->bInheritPitch = false;
 		PFAnim->SetFPS(false);
 		break;
 	case TPS:
@@ -1208,39 +1194,93 @@ void APFCharacter::OnRep_CurrentControlMode()
 		SpringArm->SetRelativeLocation(FVector(0.f, 0.f, 70.f));
 		SpringArm->SocketOffset = FVector(0.f, 50.f, 0.f);
 		SpringArm->SetRelativeRotation(FRotator::ZeroRotator);
-		SpringArm->bUsePawnControlRotation = true;
 		SpringArm->bInheritPitch = true;
-		SpringArm->bInheritRoll = true;
-		SpringArm->bInheritYaw = true;
-		SpringArm->bDoCollisionTest = true;
-		bUseControllerRotationYaw = false;
-		GetCharacterMovement()->bUseControllerDesiredRotation = !bLevelStartActive;
-		GetCharacterMovement()->RotationRate = FRotator(0.f, -1.f, 0.f);
 		PFAnim->SetFPS(false);
 		break;
 	case FPS:
 		ArmLengthTo = 0.f;
 		SpringArm->SetRelativeLocation(FVector(20.f, 0.f, 80.f));
 		SpringArm->SetRelativeRotation(FRotator::ZeroRotator);
-		SpringArm->bUsePawnControlRotation = true;
 		SpringArm->bInheritPitch = true;
-		SpringArm->bInheritRoll = true;
-		SpringArm->bInheritYaw = true;
-		SpringArm->bDoCollisionTest = true;
-		bUseControllerRotationYaw = false;
-		GetCharacterMovement()->bUseControllerDesiredRotation = !bLevelStartActive;
-		GetCharacterMovement()->RotationRate = FRotator(0.f, -1.f, 0.f);
 		PFAnim->SetFPS(IsLocallyControlled());
 		break;
 	default:
 		break;
+	}
+	if (APFPlayerController* PlayerController = Cast<APFPlayerController>(GetController()))
+	{
+		PlayerController->BindCharacterHUD();
+	}
+	UpdateFirstPersonPresentation();
+}
+
+// 시점에 맞는 연출 메시 선택
+USkeletalMeshComponent* APFCharacter::GetPresentationMesh() const
+{
+	return bFirstPersonPresentationActive ? FirstPersonMesh.Get() : GetMesh();
+}
+
+// 공통 카메라에서 전체 캐릭터 표시
+void APFCharacter::SetCampaignCameraActive(bool bActive)
+{
+	if (bCampaignCameraActive == bActive) return;
+	bCampaignCameraActive = bActive;
+	UpdateFirstPersonPresentation();
+}
+
+// 소유 플레이어의 1인칭 표시 전환
+void APFCharacter::UpdateFirstPersonPresentation()
+{
+	const bool bEnable = !bCampaignCameraActive && IsLocalPlayerCharacter() && CurrentControlMode == FPS && FirstPersonMeshAsset
+		&& GetNetMode() != NM_DedicatedServer
+		&& !FPackageName::GetShortName(GetWorld()->GetMapName()).Contains(TEXT("Title"));
+	if (bEnable && !FirstPersonMesh)
+	{
+		FirstPersonMesh = NewObject<UPFFirstPersonMeshComponent>(this, TEXT("FirstPersonArms"));
+		FirstPersonMesh->SetupAttachment(GetRootComponent());
+		FirstPersonMesh->SetSkeletalMesh(FirstPersonMeshAsset);
+		FirstPersonMesh->SetVisibility(false);
+		FirstPersonMesh->RegisterComponent();
+		FirstPersonMesh->InitializeView(GetMesh(), Camera, FirstPersonNeckOffset);
+	}
+	if (bEnable != bFirstPersonPresentationActive)
+	{
+		bFirstPersonPresentationActive = bEnable;
+		if (bEnable)
+		{
+			bSavedBodyOwnerNoSee = GetMesh()->bOwnerNoSee;
+			SavedBodyForcedLOD = GetMesh()->GetForcedLOD();
+			SavedBodyAnimTickOption = GetMesh()->VisibilityBasedAnimTickOption;
+			SavedBodyPrimitiveType = GetMesh()->FirstPersonPrimitiveType;
+			GetMesh()->SetOwnerNoSee(true);
+			GetMesh()->SetFirstPersonPrimitiveType(EFirstPersonPrimitiveType::WorldSpaceRepresentation);
+			GetMesh()->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
+			GetMesh()->SetForcedLOD(1);
+			Camera->SetFirstPersonFieldOfView(FirstPersonFieldOfView);
+			Camera->SetFirstPersonScale(0.3f);
+		}
+		else
+		{
+			GetMesh()->SetOwnerNoSee(bSavedBodyOwnerNoSee);
+			GetMesh()->SetFirstPersonPrimitiveType(SavedBodyPrimitiveType);
+			GetMesh()->VisibilityBasedAnimTickOption = SavedBodyAnimTickOption;
+			GetMesh()->SetForcedLOD(SavedBodyForcedLOD);
+		}
+		Camera->SetEnableFirstPersonFieldOfView(bEnable);
+		Camera->SetEnableFirstPersonScale(bEnable);
+		FirstPersonMesh->SetComponentTickEnabled(bEnable);
+	}
+	if (FirstPersonMesh)
+	{
+		FirstPersonMesh->SetVisibility(bEnable && !IsDeadCharacter() && !bLevelStartActive);
 	}
 }
 
 // 조종 역할, GAS 연결 갱신
 void APFCharacter::RefreshControlRole()
 {
-	if (ShrubStealth) ShrubStealth->RefreshState();
+	ShrubStealth->RefreshState();
+	UpdateFirstPersonPresentation();
 	if (CharacterRole == EPFCharacterRole::ROLE_END)
 	{
 		return;
@@ -1278,6 +1318,7 @@ void APFCharacter::UnPossessed()
 	EndJumpPadFlight();
 	ClearControlCommands();
 	Super::UnPossessed();
+	UpdateFirstPersonPresentation();
 }
 
 bool APFCharacter::CanJumpInternal_Implementation() const
@@ -1289,9 +1330,7 @@ bool APFCharacter::CanJumpInternal_Implementation() const
 bool APFCharacter::BeginJumpPadFlight(const FVector& LaunchVelocity, float Duration)
 {
 	UCharacterMovementComponent* Movement = GetCharacterMovement();
-	if (!HasAuthority() || !IsPlayerCharacter() || !GetController() || IsDeadCharacter()
-		|| bLevelStartActive || bJumpPadFlightActive || !Movement || !Movement->IsMovingOnGround()
-		|| LaunchVelocity.ContainsNaN() || !FMath::IsFinite(Duration) || Duration <= 0.f) return false;
+	if (!GetController()) return false;
 	bJumpPadFlightActive = true;
 	SetReplicatedStateTag(PFGameplayTags::Character_State_Sprinting, false);
 	OnRep_JumpPadFlightActive();
@@ -1311,7 +1350,7 @@ void APFCharacter::OnRep_JumpPadFlightActive()
 	UCharacterMovementComponent* Movement = GetCharacterMovement();
 	if (bJumpPadFlightActive)
 	{
-		if (Movement && !bJumpPadMovementSaved)
+		if (!bJumpPadMovementSaved)
 		{
 			SavedJumpPadAirControl = Movement->AirControl;
 			SavedJumpPadFallingFriction = Movement->FallingLateralFriction;
@@ -1324,7 +1363,7 @@ void APFCharacter::OnRep_JumpPadFlightActive()
 		ClearControlCommands();
 		ConsumeMovementInputVector();
 	}
-	else if (Movement && bJumpPadMovementSaved)
+	else if (bJumpPadMovementSaved)
 	{
 		Movement->AirControl = SavedJumpPadAirControl;
 		Movement->FallingLateralFriction = SavedJumpPadFallingFriction;
@@ -1361,7 +1400,7 @@ void APFCharacter::EndJumpPadFlight(bool bStopMovement)
 	const bool bWasActive = bJumpPadFlightActive;
 	bJumpPadFlightActive = false;
 	if (GetWorld()) GetWorldTimerManager().ClearTimer(JumpPadFlightTimer);
-	if (bStopMovement && GetCharacterMovement()) GetCharacterMovement()->StopMovementImmediately();
+	if (bStopMovement) GetCharacterMovement()->StopMovementImmediately();
 	OnRep_JumpPadFlightActive();
 	if (HasAuthority() && bWasActive && !IsActorBeingDestroyed())
 	{
@@ -1471,9 +1510,9 @@ void APFCharacter::ClearControlCommands()
 	if (HasAuthority())
 	{
 		FGameplayTagContainer AvatarAbilityTags;
-		AvatarAbilityTags.AddTag(FGameplayTag::RequestGameplayTag(FName("Character.Ability.Attack")));
-		AvatarAbilityTags.AddTag(FGameplayTag::RequestGameplayTag(FName("Character.Ability.Jump")));
-		AvatarAbilityTags.AddTag(FGameplayTag::RequestGameplayTag(FName("Character.Ability.Ultimate")));
+		AvatarAbilityTags.AddTag(PFGameplayTags::Character_Ability_Attack);
+		AvatarAbilityTags.AddTag(PFGameplayTags::Character_Ability_Jump);
+		AvatarAbilityTags.AddTag(PFGameplayTags::Character_Ability_Ultimate);
 		TArray<FGameplayAbilitySpecHandle> ActiveHandles;
 		for (FGameplayAbilitySpec& Spec : ASC->GetActivatableAbilities())
 		{
@@ -1594,20 +1633,14 @@ FPFCharacterSharedStateSnapshot APFCharacter::CaptureViewState() const
 	Snapshot.FinalDirection = FinalDir;
 
 	// 카메라 상태 저장
-	if (SpringArm)
-	{
-		Snapshot.SpringArmLength = SpringArm->TargetArmLength;
-		Snapshot.SpringArmRelativeLocation = SpringArm->GetRelativeLocation();
-		Snapshot.SpringArmRelativeRotation = SpringArm->GetRelativeRotation();
-	}
+	Snapshot.SpringArmLength = SpringArm->TargetArmLength;
+	Snapshot.SpringArmRelativeLocation = SpringArm->GetRelativeLocation();
+	Snapshot.SpringArmRelativeRotation = SpringArm->GetRelativeRotation();
 
 	Snapshot.DesiredSpringArmLength = ArmLengthTo;
 	Snapshot.DesiredSpringArmRotation = ArmRotationTo;
 
-	if (Camera)
-	{
-		Snapshot.CameraFieldOfView = Camera->FieldOfView;
-	}
+	Snapshot.CameraFieldOfView = Camera->FieldOfView;
 
 	return Snapshot;
 }
@@ -1625,10 +1658,7 @@ void APFCharacter::ApplyViewState(const FPFCharacterSharedStateSnapshot& Snapsho
 
 	// 이동 입력, 속도 초기화
 	MovementInputDirection = IDLE;
-	if (GetCharacterMovement())
-	{
-		GetCharacterMovement()->StopMovementImmediately();
-	}
+	GetCharacterMovement()->StopMovementImmediately();
 
 	// 제어 설정 반영
 	ViewpointFixed = true;
@@ -1642,15 +1672,9 @@ void APFCharacter::ApplyViewState(const FPFCharacterSharedStateSnapshot& Snapsho
 	ArmLengthTo = Snapshot.DesiredSpringArmLength;
 	ArmRotationTo = Snapshot.DesiredSpringArmRotation;
 
-	if (SpringArm)
-	{
-		SpringArm->TargetArmLength = Snapshot.SpringArmLength;
-		SpringArm->SetRelativeLocation(Snapshot.SpringArmRelativeLocation);
-		SpringArm->SetRelativeRotation(Snapshot.SpringArmRelativeRotation);
-	}
+	SpringArm->TargetArmLength = Snapshot.SpringArmLength;
+	SpringArm->SetRelativeLocation(Snapshot.SpringArmRelativeLocation);
+	SpringArm->SetRelativeRotation(Snapshot.SpringArmRelativeRotation);
 
-	if (Camera)
-	{
-		Camera->SetFieldOfView(Snapshot.CameraFieldOfView);
-	}
+	Camera->SetFieldOfView(Snapshot.CameraFieldOfView);
 }

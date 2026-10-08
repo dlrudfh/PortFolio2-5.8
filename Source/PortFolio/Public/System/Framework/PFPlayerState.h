@@ -10,6 +10,17 @@
 
 #include "PFPlayerState.generated.h"
 
+UENUM()
+enum class EPFShopPurchaseResult : uint8
+{
+	Success,
+	Unavailable,
+	InvalidItem,
+	InsufficientFunds,
+	InventoryFull,
+	Failed
+};
+
 // 인벤토리 슬롯 정보
 USTRUCT(BlueprintType)
 struct FPFInventorySlot
@@ -36,6 +47,8 @@ public:
 };
 
 DECLARE_MULTICAST_DELEGATE(FOnInventoryChangedDelegate);
+DECLARE_MULTICAST_DELEGATE(FOnPlayerInfoChangedDelegate);
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnShopPurchaseResultDelegate, int32, EPFShopPurchaseResult);
 
 // 플레이어 스탯, 소지품 관리 클래스
 UCLASS()
@@ -54,7 +67,12 @@ public:
 
 	APFPlayerState();
 	virtual void BeginPlay() override;
+	virtual void SetPlayerName(const FString& Name) override;
+	virtual void OnRep_PlayerName() override;
 	virtual void CopyProperties(APlayerState* NewPlayerState) override;
+	void RestoreCampaignInventory(const TArray<FPFInventorySlot>& Slots, const TArray<int32>& QuickSlots);
+	void PrepareCampaignCheckpoint();
+	bool GrantCampaignSupply();
 
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
 	UPFAttributeSet* GetAttributeSet() const { return AttributeSet; }
@@ -63,13 +81,27 @@ public:
 	UFUNCTION(Server, Reliable, WithValidation)
 	void Server_IncreaseStat(int32 UpgradeTypeIndex);
 
-	ECHARACTER GetCharacter() { return CharacterType; }
+	ECHARACTER GetCharacter() const { return CharacterType; }
+	bool HasLobbySelection() const { return bLobbyCharacterSelected; }
+	bool IsLobbyReady() const { return bLobbyReady; }
+	int32 GetLobbySlot() const { return LobbySlot; }
+	void SetLobbySelection(ECHARACTER SelectedCharacter, bool bSelected);
+	void SetLobbyReady(bool bReady);
+	void SetLobbySlot(int32 Slot);
+	void EnsureInitialInventoryItems();
 
 	void SetCharacter(ECHARACTER SelectedCharacter);
 	UFUNCTION(Server, Reliable)
 	void Server_SetCharacter(ECHARACTER SelectedCharacter);
 
 	bool AddInventoryItem(int32 ItemID, int32 Count = 1);
+	static int32 GetShopItemPrice(int32 ItemID);
+	EPFShopPurchaseResult GetShopPurchaseResult(int32 ItemID) const;
+	void PurchaseShopItem(int32 ItemID);
+	UFUNCTION(Server, Reliable)
+	void Server_PurchaseShopItem(int32 ItemID);
+	UFUNCTION(Client, Reliable)
+	void Client_ShopPurchaseResult(int32 ItemID, EPFShopPurchaseResult Result);
 
 	void UseInventoryItem(int32 SlotIndex, class APFCharacter* Character);
 	UFUNCTION(Server, Reliable)
@@ -106,15 +138,24 @@ protected:
 
 private:
 	void InitializeInventorySlots();
+	UFUNCTION()
+	void OnRep_CharacterType();
+	UFUNCTION()
+	void OnRep_LobbyState();
 
 	void InitializeQuickSlots();
 
 	void GrantInitialInventoryItems();
 
 	bool AddInventoryItemInternal(int32 ItemID, int32 Count);
+	void AddInventoryItemToSlot(int32 SlotIndex, int32 ItemID, int32 Count);
+	void UseInventoryItemInternal(int32 SlotIndex, class APFCharacter* Character);
 
 	int32 FindInventorySlotIndexByItemID(int32 ItemID) const;
+	int32 FindAvailableInventorySlot(int32 ItemID) const;
 
+	bool IsInventoryUser(const class APFCharacter* Character) const;
+	bool CanUseUIInput() const;
 	bool CanUseInventoryItem(int32 ItemID) const;
 
 	void SanitizeQuickSlots();
@@ -122,8 +163,14 @@ private:
 	FActiveGameplayEffectHandle StartItemCooldown(int32 ItemID);
 
 private:
-	UPROPERTY(Replicated)
+	UPROPERTY(ReplicatedUsing = OnRep_CharacterType)
 	ECHARACTER CharacterType = CHARACTER_TWINBLAST;
+	UPROPERTY(ReplicatedUsing = OnRep_LobbyState)
+	bool bLobbyCharacterSelected = false;
+	UPROPERTY(ReplicatedUsing = OnRep_LobbyState)
+	bool bLobbyReady = false;
+	UPROPERTY(ReplicatedUsing = OnRep_LobbyState)
+	int32 LobbySlot = INDEX_NONE;
 
 	// 인벤토리 슬롯 목록
 	UPROPERTY(ReplicatedUsing = OnRep_InventorySlots)
@@ -134,8 +181,13 @@ private:
 	TArray<int32> QuickSlotItemIDs;
 
 public:
+	// 이름, 선택 캐릭터 변경 이벤트
+	FOnPlayerInfoChangedDelegate OnPlayerInfoChanged;
+
 	// 소지품 변경 이벤트
 	FOnInventoryChangedDelegate OnInventoryChanged;
+	// 소유 플레이어의 구매 결과
+	FOnShopPurchaseResultDelegate OnShopPurchaseResult;
 
 private:
 	// 플레이어가 유지하는 ASC

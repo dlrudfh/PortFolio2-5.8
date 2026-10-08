@@ -1,4 +1,5 @@
 #include "GAS/Components/PFGameplayEffectTriggerComponent.h"
+#include "GAS/PFGameplayTags.h"
 
 #include "AbilitySystemBlueprintLibrary.h"
 #include "AbilitySystemComponent.h"
@@ -26,11 +27,8 @@ UPFGameplayEffectTriggerComponent::UPFGameplayEffectTriggerComponent()
 	SetCollisionObjectType(ECC_WorldDynamic);
 	SetCollisionResponseToAllChannels(ECR_Ignore);
 	SetCollisionResponseToChannel(ECC_Pawn, ECR_Overlap);
-	ECollisionChannel PFCharacterCollisionChannel;
-	if (GetCollisionChannel(PFCollisionChannelNames::PFCharacter, PFCharacterCollisionChannel))
-	{
-		SetCollisionResponseToChannel(PFCharacterCollisionChannel, ECR_Overlap);
-	}
+	static const ECollisionChannel PFCharacterCollisionChannel = GetCollisionChannel(PFCollisionChannelNames::PFCharacter);
+	SetCollisionResponseToChannel(PFCharacterCollisionChannel, ECR_Overlap);
 	SetGenerateOverlapEvents(true);
 
 	OnComponentBeginOverlap.AddUniqueDynamic(this, &UPFGameplayEffectTriggerComponent::HandleBeginOverlap);
@@ -42,11 +40,8 @@ void UPFGameplayEffectTriggerComponent::OnRegister()
 	Super::OnRegister();
 	// 캐릭터 겹침 응답 설정
 	SetCollisionResponseToChannel(ECC_Pawn, ECR_Overlap);
-	ECollisionChannel PFCharacterCollisionChannel;
-	if (GetCollisionChannel(PFCollisionChannelNames::PFCharacter, PFCharacterCollisionChannel))
-	{
-		SetCollisionResponseToChannel(PFCharacterCollisionChannel, ECR_Overlap);
-	}
+	static const ECollisionChannel PFCharacterCollisionChannel = GetCollisionChannel(PFCollisionChannelNames::PFCharacter);
+	SetCollisionResponseToChannel(PFCharacterCollisionChannel, ECR_Overlap);
 	AutoFitToOwnerCollision();
 	if (HasBegunPlay() && GetWorld())
 	{
@@ -88,7 +83,7 @@ void UPFGameplayEffectTriggerComponent::OnUnregister()
 bool UPFGameplayEffectTriggerComponent::GrantsJumpBlock() const
 {
 	const UGameplayEffect* Effect = EffectClass ? EffectClass.GetDefaultObject() : nullptr;
-	return Effect && Effect->GetGrantedTags().HasTag(FGameplayTag::RequestGameplayTag(TEXT("Character.Block.Jump")));
+	return Effect && Effect->GetGrantedTags().HasTag(PFGameplayTags::Character_Block_Jump);
 }
 
 // 영역 크기 기준 컴포넌트 탐색
@@ -267,7 +262,7 @@ bool UPFGameplayEffectTriggerComponent::CanProcessEffects() const
 void UPFGameplayEffectTriggerComponent::ApplyEffectToActor(AActor* TargetActor)
 {
 	const TWeakObjectPtr<AActor> TargetKey(TargetActor);
-	if (!IsValid(TargetActor) || !OverlapCounts.Contains(TargetKey) || !EffectClass
+	if (!EffectClass
 		|| AppliedEffectHandles.Contains(TargetKey))
 	{
 		PendingEffectActors.Remove(TargetKey);
@@ -276,11 +271,6 @@ void UPFGameplayEffectTriggerComponent::ApplyEffectToActor(AActor* TargetActor)
 
 	UAbilitySystemComponent* AbilitySystem = UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(TargetActor);
 	const UGameplayEffect* GameplayEffect = EffectClass.GetDefaultObject();
-	if (!GameplayEffect)
-	{
-		PendingEffectActors.Remove(TargetKey);
-		return;
-	}
 	// ASC가 준비될 때까지 적용 대기
 	if (!IsValid(AbilitySystem))
 	{

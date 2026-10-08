@@ -10,6 +10,7 @@ class UPrimitiveComponent;
 class UMeshComponent;
 class UMaterialInterface;
 class UMaterialInstanceDynamic;
+struct FStreamableHandle;
 
 // 은신 중 사용할 캐릭터 머티리얼 변형
 UCLASS()
@@ -45,6 +46,7 @@ class PORTFOLIO_API UPFShrubStealthComponent : public UActorComponent
 public:
 	UPFShrubStealthComponent();
 	bool IsConcealed() const { return bConcealed; }
+	bool IsRevealedByAttack() const { return bRevealedByAttack && IsInsideShrub(); }
 	void BreakForAttack();
 	void RefreshState();
 	virtual void BeginPlay() override;
@@ -64,19 +66,23 @@ private:
 	void SetConcealed(bool bNewConcealed);
 	void RefreshPresentation();
 	void RestorePresentation();
-	void ApplyLocalFade(UMeshComponent* Mesh);
+	void PrepareLocalFade(UMeshComponent* Mesh);
+	bool ApplyLocalFade(UMeshComponent* Mesh);
 
 	// 은신 판정 캐릭터
 	TWeakObjectPtr<APFCharacter> Character;
 	UPROPERTY(ReplicatedUsing = OnRep_Concealed)
 	bool bConcealed = false;
 	bool bRequiresExit = false;
+	bool bRevealedByAttack = false;
 	// 은신 전 컴포넌트 표시 상태
 	TMap<TWeakObjectPtr<UPrimitiveComponent>, bool> HiddenStates;
 	TSet<TWeakObjectPtr<UMeshComponent>> FadedMeshes;
-	// 은신 종료 시 복원할 원본 머티리얼
+	TSet<TWeakObjectPtr<UMeshComponent>> PrecachedMeshes;
+	// 원본 머티리얼, 준비된 은신 머티리얼
 	UPROPERTY(Transient)
 	TArray<FPFConcealedMaterialSlot> MaterialSlots;
 	UPROPERTY(EditDefaultsOnly, Category = "Stealth")
 	TSoftObjectPtr<UPFShrubMaterialLibrary> MaterialLibrary;
+	TSharedPtr<FStreamableHandle> MaterialLoad;
 };

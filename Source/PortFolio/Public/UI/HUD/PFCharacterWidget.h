@@ -19,6 +19,8 @@ public:
 protected:
 	virtual void NativeConstruct() override;
 	void UpdateAllWidget();
+	void UpdateUsername();
+	void UpdateResourceWidgets(class UProgressBar* Progress, class UTextBlock* Text, float Current, float Maximum);
 	void UpdateHPWidget();
 	void UpdateMPWidget();
 

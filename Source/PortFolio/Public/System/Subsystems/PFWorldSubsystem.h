@@ -7,12 +7,13 @@
 #include "PFWorldSubsystem.generated.h"
 
 class APFCharacter;
+class APFCampaignDirector;
 class UGameplayAbility;
 class UPFGameplayEffectTriggerComponent;
 
 struct FPFJumpBlockRegion
 {
-    FTransform Transform;
+    FMatrix WorldToLocal = FMatrix::Identity;
     FVector Extent = FVector::ZeroVector;
 };
 
@@ -29,6 +30,10 @@ public:
         APFCharacter* ProjectileParent, UGameplayAbility* SourceAbility = nullptr);
     void ReleaseActor(AActor* PoolActor);
 
+    APFCampaignDirector* GetCampaignDirector();
+    void RegisterCampaignDirector(APFCampaignDirector* Director);
+    void UnregisterCampaignDirector(APFCampaignDirector* Director);
+
     void RegisterJumpBlockRegion(UPFGameplayEffectTriggerComponent* Region);
     void UnregisterJumpBlockRegion(UPFGameplayEffectTriggerComponent* Region);
     void GetJumpBlockRegions(TArray<FPFJumpBlockRegion>& OutRegions) const;
@@ -37,6 +42,9 @@ private:
     bool RegisterPoolableActor(AActor* Actor);
     // 클래스별 대기 액터 풀
     TMap<TSubclassOf<AActor>, TArray<AActor*>> PoolContainer;
+    // 현재 월드의 캠페인 관리자
+    TWeakObjectPtr<APFCampaignDirector> CampaignDirector;
+    bool bCampaignDirectorLookupComplete = false;
     // 월드 내 점프 금지 영역
     TArray<TWeakObjectPtr<UPFGameplayEffectTriggerComponent>> JumpBlockRegions;
 };

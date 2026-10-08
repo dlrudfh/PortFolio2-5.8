@@ -2,6 +2,20 @@
 
 namespace PFGameplayTags
 {
+	// 이동, 궁극기, 전투 연출 태그
+	UE_DEFINE_GAMEPLAY_TAG(Character_Block_Jump, "Character.Block.Jump");
+	UE_DEFINE_GAMEPLAY_TAG(Character_Block_Move, "Character.Block.Move");
+	UE_DEFINE_GAMEPLAY_TAG(Character_Block_Ultimate, "Character.Block.Ultimate");
+	UE_DEFINE_GAMEPLAY_TAG(Character_Ability_Jump, "Character.Ability.Jump");
+	UE_DEFINE_GAMEPLAY_TAG(Character_Ability_Ultimate, "Character.Ability.Ultimate");
+	UE_DEFINE_GAMEPLAY_TAG(GameplayCue_Character_Attack_Kwang_Normal_Montage, "GameplayCue.Character.Attack.Kwang.Normal.Montage");
+	UE_DEFINE_GAMEPLAY_TAG(GameplayCue_Character_Attack_Twinblast_Normal_Montage, "GameplayCue.Character.Attack.Twinblast.Normal.Montage");
+	UE_DEFINE_GAMEPLAY_TAG(GameplayCue_Character_Attack_Twinblast_Normal_Shoot, "GameplayCue.Character.Attack.Twinblast.Normal.Shoot");
+	UE_DEFINE_GAMEPLAY_TAG(GameplayCue_Character_Attack_Twinblast_Ultimate_Montage, "GameplayCue.Character.Attack.Twinblast.Ultimate.Montage");
+	UE_DEFINE_GAMEPLAY_TAG(GameplayCue_Character_Attack_Twinblast_Ultimate_Shoot, "GameplayCue.Character.Attack.Twinblast.Ultimate.Shoot");
+	UE_DEFINE_GAMEPLAY_TAG(Character_Ability_Ultimate_Twinblast, "Character.Ability.Ultimate.Twinblast");
+	UE_DEFINE_GAMEPLAY_TAG(Character_State_Shield, "Character.State.Shield");
+
 	// 공격 어빌리티 태그
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Character_Ability_Attack, "Character.Ability.Attack", "모든 기본공격 GameplayAbility");
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Character_Ability_Attack_Kwang, "Character.Ability.Attack.Kwang", "Kwang 기본공격 GameplayAbility");

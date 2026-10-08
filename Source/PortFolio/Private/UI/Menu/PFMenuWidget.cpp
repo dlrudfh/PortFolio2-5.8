@@ -22,9 +22,6 @@ void UPFMenuWidget::NativeConstruct()
 
 	TitleButton->OnClicked.AddUniqueDynamic(this, &UPFMenuWidget::HandleGoToTitle);
 	ExitButton->OnClicked.AddUniqueDynamic(this, &UPFMenuWidget::HandleExitGame);
-	// 메뉴 테스트용 로그
-	PFLOG(Warning, TEXT("[MenuTest] Buttons bound Menu=%s Title=%d Exit=%d"),
-		*GetNameSafe(this), TitleButton->OnClicked.IsBound(), ExitButton->OnClicked.IsBound());
 
 	if (const UPFGameInstance* GI = GetGameInstance<UPFGameInstance>())
 	{
@@ -50,6 +47,8 @@ void UPFMenuWidget::NativeDestruct()
 // 전체 음량 적용, 수치 갱신
 void UPFMenuWidget::HandleVolumeChanged(float Value)
 {
+	const APFPlayerController* Player = Cast<APFPlayerController>(GetOwningPlayer());
+	if (!Player || !Player->CanUseSettingsInput()) return;
 	if (UPFGameInstance* GI = GetGameInstance<UPFGameInstance>())
 	{
 		GI->SetMenuVolume(Value);
@@ -60,6 +59,8 @@ void UPFMenuWidget::HandleVolumeChanged(float Value)
 // 카메라 감도 적용, 수치 갱신
 void UPFMenuWidget::HandleSensitivityChanged(float Value)
 {
+	const APFPlayerController* Player = Cast<APFPlayerController>(GetOwningPlayer());
+	if (!Player || !Player->CanUseSettingsInput()) return;
 	if (UPFGameInstance* GI = GetGameInstance<UPFGameInstance>())
 	{
 		GI->SetCameraSensitivity(Value);
@@ -86,9 +87,6 @@ FReply UPFMenuWidget::NativeOnPreviewKeyDown(const FGeometry& InGeometry, const 
 	{
 		if (!InKeyEvent.IsRepeat())
 		{
-			// 메뉴 테스트용 로그
-			PFLOG(Warning, TEXT("[MenuTest] Close key=%s Controller=%s Enabled=%d"),
-				*InKeyEvent.GetKey().ToString(), *GetNameSafe(GetOwningPlayer()), GetIsEnabled());
 			if (APFPlayerController* Controller = Cast<APFPlayerController>(GetOwningPlayer()))
 			{
 				Controller->OpenMenu();
@@ -101,52 +99,37 @@ FReply UPFMenuWidget::NativeOnPreviewKeyDown(const FGeometry& InGeometry, const 
 
 FReply UPFMenuWidget::NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
-	// 메뉴 테스트용 로그
-	PFLOG(Warning, TEXT("[MenuTest] Unhandled child mouse-down reached menu Key=%s Enabled=%d"),
-		*InMouseEvent.GetEffectingButton().ToString(), GetIsEnabled());
 	return FReply::Handled().SetUserFocus(TakeWidget());
 }
 
 // 연결 종료, 타이틀 복귀
 void UPFMenuWidget::HandleGoToTitle()
 {
-	// 메뉴 테스트용 로그
-	PFLOG(Warning, TEXT("[MenuTest] GoToTitle clicked Menu=%s GI=%s Controller=%s Enabled=%d"),
-		*GetNameSafe(this), *GetNameSafe(GetGameInstance()), *GetNameSafe(GetOwningPlayer()), GetIsEnabled());
+	const APFPlayerController* Player = Cast<APFPlayerController>(GetOwningPlayer());
+	if (!Player || !Player->CanUseSettingsInput()) return;
 	if (UPFGameInstance* GameInstance = GetGameInstance<UPFGameInstance>())
 	{
 		SetIsEnabled(false);
-		// 메뉴 테스트용 로그
-		PFLOG(Warning, TEXT("[MenuTest] Calling GI ReturnToMainMenu"));
 		GameInstance->ReturnToMainMenu();
-		// 메뉴 테스트용 로그
-		PFLOG(Warning, TEXT("[MenuTest] GI ReturnToMainMenu call returned"));
 	}
 	else
 	{
-		// 메뉴 테스트용 로그
-		PFLOG(Warning, TEXT("[MenuTest] GoToTitle failed: PFGameInstance unavailable"));
+		PFLOG(Warning, TEXT("GoToTitle failed: PFGameInstance unavailable"));
 	}
 }
 
 // 세션 정리 후 게임 종료
 void UPFMenuWidget::HandleExitGame()
 {
-	// 메뉴 테스트용 로그
-	PFLOG(Warning, TEXT("[MenuTest] ExitGame clicked Menu=%s GI=%s Controller=%s Enabled=%d"),
-		*GetNameSafe(this), *GetNameSafe(GetGameInstance()), *GetNameSafe(GetOwningPlayer()), GetIsEnabled());
+	const APFPlayerController* Player = Cast<APFPlayerController>(GetOwningPlayer());
+	if (!Player || !Player->CanUseSettingsInput()) return;
 	if (UPFGameInstance* GameInstance = GetGameInstance<UPFGameInstance>())
 	{
 		SetIsEnabled(false);
-		// 메뉴 테스트용 로그
-		PFLOG(Warning, TEXT("[MenuTest] Calling GI ExitGame"));
 		GameInstance->ExitGame();
-		// 메뉴 테스트용 로그
-		PFLOG(Warning, TEXT("[MenuTest] GI ExitGame call returned"));
 	}
 	else
 	{
-		// 메뉴 테스트용 로그
-		PFLOG(Warning, TEXT("[MenuTest] ExitGame failed: PFGameInstance unavailable"));
+		PFLOG(Warning, TEXT("ExitGame failed: PFGameInstance unavailable"));
 	}
 }

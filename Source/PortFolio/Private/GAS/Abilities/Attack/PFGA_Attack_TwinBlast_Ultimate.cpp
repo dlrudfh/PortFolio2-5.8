@@ -7,7 +7,8 @@
 
 UPFGA_Attack_TwinBlast_Ultimate::UPFGA_Attack_TwinBlast_Ultimate()
 {
-	const FGameplayTag UltimateState = FGameplayTag::RequestGameplayTag(FName("Character.State.Ultimate"));
+	NetExecutionPolicy = EGameplayAbilityNetExecutionPolicy::ServerOnly;
+	const FGameplayTag UltimateState = PFGameplayTags::Character_State_Ultimate;
 	ActivationBlockedTags.RemoveTag(UltimateState);
 	ActivationRequiredTags.AddTag(UltimateState);
 
@@ -16,15 +17,15 @@ UPFGA_Attack_TwinBlast_Ultimate::UPFGA_Attack_TwinBlast_Ultimate()
 	AssetTags.AddTag(PFGameplayTags::Character_Ability_Attack_Twinblast_UltAttack);
 	SetAssetTags(AssetTags);
 
-	MontageGCTag = FGameplayTag::RequestGameplayTag(FName("GameplayCue.Character.Attack.Twinblast.Ultimate.Montage"));
-	AttackGCTag = FGameplayTag::RequestGameplayTag(FName("GameplayCue.Character.Attack.Twinblast.Ultimate.Shoot"));
+	MontageGCTag = PFGameplayTags::GameplayCue_Character_Attack_Twinblast_Ultimate_Montage;
+	AttackGCTag = PFGameplayTags::GameplayCue_Character_Attack_Twinblast_Ultimate_Shoot;
 	LeftMuzzleSocket = FName("Muzzle_04");
 	RightMuzzleSocket = FName("Muzzle_03");
 }
 
 bool UPFGA_Attack_TwinBlast_Ultimate::CanActivateTwinBlastAttack(const FGameplayAbilityActorInfo* ActorInfo) const
 {
-	const APFTwinBlast* TwinBlast = ActorInfo ? Cast<APFTwinBlast>(ActorInfo->AvatarActor.Get()) : nullptr;
+	const APFTwinBlast* TwinBlast = Cast<APFTwinBlast>(ActorInfo->AvatarActor.Get());
 	if (!TwinBlast || !TwinBlast->IsPlayerCharacter())
 	{
 		return false;
@@ -36,7 +37,7 @@ bool UPFGA_Attack_TwinBlast_Ultimate::CanActivateTwinBlastAttack(const FGameplay
 	}
 
 	const UWorld* World = TwinBlast->GetWorld();
-	return World && World->GetTimeSeconds() - LastShootTime >= ShootInterval;
+	return World->GetTimeSeconds() - LastShootTime >= ShootInterval;
 }
 
 void UPFGA_Attack_TwinBlast_Ultimate::WaitForEvent(AActor* AvatarActor)

@@ -18,6 +18,7 @@ class PORTFOLIO_API UPFAnimInstance : public UAnimInstance
 public:
 	UPFAnimInstance();
 	virtual void PlayMontage(int NextIdx) PURE_VIRTUAL(UPFAnimInstance::PlayMontage);
+	UAnimMontage* GetMontageByIndex(int32 Index) const;
 	UFUNCTION(BlueprintPure, Category = "GAS|State", meta = (BlueprintThreadSafe))
 	bool IsInAir() const;
 	UFUNCTION(BlueprintPure, Category = "GAS|State", meta = (BlueprintThreadSafe))
@@ -44,9 +45,16 @@ public:
 	const int LEVELSTART_GLOBAL = 0;
 
 protected:
-	ENetRole CheckCharacterType();
 	virtual void LoadMontages() PURE_VIRTUAL(UPFAnimInstance::LoadMontages);
+	void LoadMontages(TConstArrayView<const TCHAR*> Paths, int32 RequiredCount);
+	static const TCHAR* const TwinblastUltimateStart;
+	static const TCHAR* const TwinblastUltimateEnd;
+	void TrackAttackMontage(UAnimMontage* Montage, FName AttackNotify, FName AttackEndNotify);
+	bool FinishAttackMontage();
+	int32 GetMontageIndex(const UAnimMontage* Montage) const;
 	virtual void NativeInitializeAnimation() override;
+	UFUNCTION()
+	virtual void HandleMontageStarted(UAnimMontage* Montage);
 	virtual void NativeUpdateAnimation(float DeltaSeconds) override;
 	UFUNCTION()
 	void AnimNotify_SaveAttack();
@@ -77,6 +85,8 @@ protected:
 	UPROPERTY(VisibleDefaultsOnly, BlueprintReadOnly, Category = Montage, Meta = (AllowPrivateAccess = true))
 	TArray<UAnimMontage*> Montages;
 	UAnimMontage* CurMtg;
+	// 현재 공격 몽타주 식별자
+	int32 AttackMontageInstanceID = INDEX_NONE;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Lerp, Meta = (AllowPrivateAccess = true))
 	float LerpVal = 0.f;

@@ -22,9 +22,7 @@ public:
 	}; using enum ECHESTSTATE;
 
 	APFChest();
-	void ChestOpen();
-	UFUNCTION(Server, Reliable)
-	void Server_ChestOpen();
+	void ChestOpen(class APFPlayerController* Controller);
 
 protected:
 	virtual void BeginPlay() override;
@@ -37,7 +35,6 @@ protected:
 	UFUNCTION()
 	void OnRep_CurrentState();
 	void HandleChestEmpty();
-	void HandleChestDestroy();
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
@@ -58,6 +55,4 @@ public:
 
 	// 빈 상자 전환 예약
 	FTimerHandle EmptyStateTimerHandle;
-	// 상자 제거 예약
-	FTimerHandle DestroyTimerHandle;
 };

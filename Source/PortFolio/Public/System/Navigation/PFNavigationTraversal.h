@@ -42,8 +42,8 @@ namespace PFNavigationTraversal
 		float SearchHeight, FHitResult& OutHit);
 	PORTFOLIO_API bool HasClearance(UWorld& World, const FVector& Feet, const FPFTraversalSettings& Settings);
 	PORTFOLIO_API bool ValidateJump(UWorld& World, const FVector& Start, const FVector& End,
-		const FPFTraversalSettings& Settings, FPFTraversalSolution& OutSolution);
+		const FPFTraversalSettings& Settings, FPFTraversalSolution& OutSolution, bool bCheckEndpointClearance = true);
 	PORTFOLIO_API FVector GetDropVelocity(const FVector& Feet, const FVector& Destination, float MaxSpeed, float DeltaTime);
 	PORTFOLIO_API bool ValidateDrop(UWorld& World, const FVector& Start, const FVector& End,
-		const FPFTraversalSettings& Settings, float& OutDuration);
+		const FPFTraversalSettings& Settings, float& OutDuration, bool bCheckEndpointClearance = true);
 }

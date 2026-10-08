@@ -4,6 +4,7 @@
 #include "Abilities/Tasks/AbilityTask_WaitGameplayTag.h"
 #include "AbilitySystemComponent.h"
 #include "Character/PFCharacter.h"
+#include "Campaign/PFCampaignDirector.h"
 #include "Animation/PFAnimInstance.h"
 #include "Animation/AnimMontage.h"
 #include "GAS/PFGameplayTags.h"
@@ -11,7 +12,8 @@
 UPFGA_BasicAttack::UPFGA_BasicAttack()
 {
 	InstancingPolicy = EGameplayAbilityInstancingPolicy::InstancedPerActor;
-	NetExecutionPolicy = EGameplayAbilityNetExecutionPolicy::ServerOnly;
+	NetExecutionPolicy = EGameplayAbilityNetExecutionPolicy::LocalPredicted;
+	bServerRespectsRemoteAbilityCancellation = false;
 
 	FGameplayTagContainer AssetTags;
 	AssetTags.AddTag(PFGameplayTags::Character_Ability_Attack);
@@ -21,7 +23,7 @@ UPFGA_BasicAttack::UPFGA_BasicAttack()
 	ActivationOwnedTags.AddTag(AttackingStateTag);
 
 	AttackBlockedTag = PFGameplayTags::Character_Block_Attack;
-	DeadStateTag = FGameplayTag::RequestGameplayTag(FName("Character.State.Dead"));
+	DeadStateTag = PFGameplayTags::Character_State_Dead;
 	ComboResetEventTag = PFGameplayTags::Character_Event_Attack_ComboReset;
 	ActivationBlockedTags.AddTag(AttackingStateTag);
 	ActivationBlockedTags.AddTag(AttackBlockedTag);
@@ -35,16 +37,13 @@ bool UPFGA_BasicAttack::CanActivateAbility(
 	const FGameplayTagContainer* TargetTags,
 	FGameplayTagContainer* OptionalRelevantTags) const
 {
-	const APFCharacter* Character = ActorInfo ? Cast<APFCharacter>(ActorInfo->AvatarActor.Get()) : nullptr;
+	if (!Super::CanActivateAbility(Handle, ActorInfo, SourceTags, TargetTags, OptionalRelevantTags)) return false;
+	const APFCharacter* Character = Cast<APFCharacter>(ActorInfo->AvatarActor.Get());
+	if (Character && APFCampaignDirector::BlocksInput(Character->GetController())) return false;
 	if (Character && Character->IsJumpPadFlightActive()) return false;
-	const UAbilitySystemComponent* AbilitySystem = ActorInfo ? ActorInfo->AbilitySystemComponent.Get() : nullptr;
-	const FGameplayAbilitySpec* AbilitySpec = AbilitySystem ? AbilitySystem->FindAbilitySpecFromHandle(Handle) : nullptr;
-	if (!AbilitySpec || AbilitySpec->IsActive())
-	{
-		return false;
-	}
-
-	return Super::CanActivateAbility(Handle, ActorInfo, SourceTags, TargetTags, OptionalRelevantTags);
+	const UAbilitySystemComponent* AbilitySystem = ActorInfo->AbilitySystemComponent.Get();
+	const FGameplayAbilitySpec* AbilitySpec = AbilitySystem->FindAbilitySpecFromHandle(Handle);
+	return !AbilitySpec->IsActive();
 }
 
 void UPFGA_BasicAttack::ActivateAbility(
@@ -55,12 +54,7 @@ void UPFGA_BasicAttack::ActivateAbility(
 {
 	Super::ActivateAbility(Handle, ActorInfo, ActivationInfo, TriggerEventData);
 
-	AActor* AvatarActor = ActorInfo ? ActorInfo->AvatarActor.Get() : nullptr;
-	if (!IsValid(AvatarActor) || !AvatarActor->HasAuthority())
-	{
-		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
-		return;
-	}
+	AActor* AvatarActor = ActorInfo->AvatarActor.Get();
 
 	if (!CommitAbility(Handle, ActorInfo, ActivationInfo))
 	{
@@ -77,7 +71,9 @@ void UPFGA_BasicAttack::ActivateAbility(
 	}
 
 	// 종료 조건 등록, 공격 연출 준비
-	Character->BreakShrubConcealmentForAttack();
+	if (Character->HasAuthority()) Character->BreakShrubConcealmentForAttack();
+	AttackSequence = 0;
+	SetComboWindowTag(false);
 	WaitForCommonEndConditions();
 	BoundAnimInstance = AnimInstance;
 
@@ -97,17 +93,25 @@ void UPFGA_BasicAttack::EndAbility(
 	bool bReplicateEndAbility,
 	bool bWasCancelled)
 {
+	SetComboWindowTag(false);
 	// 몽타주 구독, 공격 참조 정리
 	TWeakObjectPtr<UPFAnimInstance> AnimInstanceToReset = BoundAnimInstance;
+	const bool bStopMontage = bWasCancelled || (ActorInfo && !ActorInfo->IsNetAuthority() && RemoteInstanceEnded);
 
 	UnbindAttackMontageEnd();
 	BoundAnimInstance.Reset();
 	bStartingAttackMontage = false;
+	if (UAbilitySystemComponent* AbilitySystem = GetAbilitySystemComponentFromActorInfo();
+		AbilitySystem && AbilitySystem->GetAnimatingAbility() == this)
+	{
+		if (bStopMontage) AbilitySystem->CurrentMontageStop(0.1f);
+		AbilitySystem->ClearAnimatingAbility(this);
+	}
 
 	Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);
 
 	// 취소 시 콤보 초기화
-	if (bWasCancelled)
+	if (bStopMontage)
 	{
 		if (UPFAnimInstance* AnimInstance = AnimInstanceToReset.Get())
 		{
@@ -137,8 +141,7 @@ void UPFGA_BasicAttack::InputReleased(
 // 캐릭터 애니메이션 조회
 UPFAnimInstance* UPFGA_BasicAttack::GetAnimInstance(const APFCharacter* Character) const
 {
-	USkeletalMeshComponent* Mesh = Character ? Character->GetMesh() : nullptr;
-	return Mesh ? Cast<UPFAnimInstance>(Mesh->GetAnimInstance()) : nullptr;
+	return Character ? Cast<UPFAnimInstance>(Character->GetMesh()->GetAnimInstance()) : nullptr;
 }
 
 // 공격 몽타주 재생, 종료 이벤트 연결
@@ -147,7 +150,22 @@ void UPFGA_BasicAttack::PlayAttackMontage(AActor* AvatarActor)
 	UnbindAttackMontageEnd();
 	// 몽타주 교체 중 종료 처리 보류
 	bStartingAttackMontage = true;
-	ExecuteMontageGC(AvatarActor);
+	++AttackSequence;
+	if (NetExecutionPolicy == EGameplayAbilityNetExecutionPolicy::LocalPredicted)
+	{
+		UAbilitySystemComponent* AbilitySystem = GetAbilitySystemComponentFromActorInfo();
+		UAnimMontage* Montage = GetAttackMontage(Cast<APFCharacter>(AvatarActor));
+		if (!Montage || AbilitySystem->PlayMontage(this, GetCurrentActivationInfo(), Montage, 1.f) <= 0.f)
+		{
+			bStartingAttackMontage = false;
+			CancelCurrentAbility();
+			return;
+		}
+	}
+	else
+	{
+		ExecuteMontageGC(AvatarActor);
+	}
 	bStartingAttackMontage = false;
 
 	if (!IsActive())
@@ -189,9 +207,45 @@ void UPFGA_BasicAttack::UnbindAttackMontageEnd()
 	ActiveAttackMontageInstanceID = INDEX_NONE;
 }
 
-// 공격 누름 처리 (파생 클래스 구현)
+// 공격 누름 처리
 void UPFGA_BasicAttack::HandleAttackInputPressed()
 {
+	TryContinueCombo();
+}
+
+// 콤보 입력 구간 이벤트 연결
+void UPFGA_BasicAttack::WaitForEvent(AActor*)
+{
+	UAbilityTask_WaitGameplayEvent* ComboWindowTask = UAbilityTask_WaitGameplayEvent::WaitGameplayEvent(
+		this, PFGameplayTags::Character_Event_Attack_ComboWindow, nullptr, false, true);
+	ComboWindowTask->EventReceived.AddDynamic(this, &UPFGA_BasicAttack::OnComboWindow);
+	ComboWindowTask->ReadyForActivation();
+}
+
+// 콤보 입력 구간 열기
+void UPFGA_BasicAttack::OnComboWindow(FGameplayEventData)
+{
+	SetComboWindowTag(true);
+	TryContinueCombo();
+}
+
+// 다음 콤보 준비
+bool UPFGA_BasicAttack::PrepareNextCombo()
+{
+	return true;
+}
+
+// 유지된 입력으로 다음 콤보 실행
+void UPFGA_BasicAttack::TryContinueCombo()
+{
+	APFCharacter* Attacker = Cast<APFCharacter>(GetAvatarActorFromActorInfo());
+	if (!IsComboWindowOpen() || !Attacker || !IsAttackInputHeld() || !PrepareNextCombo())
+	{
+		return;
+	}
+
+	SetComboWindowTag(false);
+	PlayAttackMontage(Attacker);
 }
 
 // 공격 해제 처리 (파생 클래스 구현)
@@ -209,13 +263,13 @@ bool UPFGA_BasicAttack::IsAttackInputHeld() const
 // 콤보 입력 구간 조회
 bool UPFGA_BasicAttack::IsComboWindowOpen() const
 {
-	const UAbilitySystemComponent* AbilitySystem = GetAbilitySystemComponentFromActorInfo();
-	return AbilitySystem && AbilitySystem->HasMatchingGameplayTag(PFGameplayTags::Character_State_Attack_ComboWindow);
+	return bComboWindowOpen;
 }
 
 // 콤보 입력 구간 설정, 복제
-void UPFGA_BasicAttack::SetComboWindowTag(bool bEnabled) const
+void UPFGA_BasicAttack::SetComboWindowTag(bool bEnabled)
 {
+	bComboWindowOpen = bEnabled;
 	UAbilitySystemComponent* AbilitySystem = GetAbilitySystemComponentFromActorInfo();
 	if (AbilitySystem && GetAvatarActorFromActorInfo() && GetAvatarActorFromActorInfo()->HasAuthority())
 	{

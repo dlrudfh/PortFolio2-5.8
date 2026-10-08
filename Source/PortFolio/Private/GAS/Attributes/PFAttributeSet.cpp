@@ -19,6 +19,12 @@ UPFAttributeSet::UPFAttributeSet()
 {
 }
 
+// 다음 레벨에 필요한 경험치
+float UPFAttributeSet::GetRequiredExperience(int32 CharacterLevel)
+{
+	return static_cast<float>(FMath::Max(1, CharacterLevel)) * 100.f;
+}
+
 void UPFAttributeSet::PreAttributeChange(const FGameplayAttribute& Attribute, float& NewValue)
 {
 	Super::PreAttributeChange(Attribute, NewValue);
@@ -52,7 +58,10 @@ void UPFAttributeSet::PostGameplayEffectExecute(const FGameplayEffectModCallback
 	// 누적 피해 소비, 체력 차감
 	if (ChangedAttribute == GetIncomingDamageAttribute())
 	{
-		const float Damage = FMath::Max(0.f, GetIncomingDamage());
+		const UAbilitySystemComponent* OwningASC = GetOwningAbilitySystemComponent();
+		const APFCharacter* Victim = OwningASC ? Cast<APFCharacter>(OwningASC->GetAvatarActor()) : nullptr;
+		const float DamageMultiplier = Victim ? Victim->GetIncomingDamageMultiplier() : 1.f;
+		const float Damage = FMath::Max(0.f, GetIncomingDamage() * DamageMultiplier);
 		SetIncomingDamage(0.f);
 
 		if (Damage > 0.f)
@@ -61,7 +70,7 @@ void UPFAttributeSet::PostGameplayEffectExecute(const FGameplayEffectModCallback
 			SetHealth(FMath::Clamp(PreviousHealth - Damage, 0.f, GetMaxHealth()));
 			OnHealthChanged.Broadcast();
 
-			// 처치 경험치 지급, 사망 알림
+			// 처치 보상 지급, 사망 알림
 			const AActor* OwningActor = GetOwningActor();
 			if (PreviousHealth > 0.f && GetHealth() <= 0.f && OwningActor && OwningActor->HasAuthority())
 			{
@@ -74,6 +83,10 @@ void UPFAttributeSet::PostGameplayEffectExecute(const FGameplayEffectModCallback
 				if (bPlayerKill)
 				{
 					FPFGE_StatGameplayEffects::ApplyExperience(KillerASC, KillExperienceReward);
+					if (Victim && Victim->IsEnemyCharacter())
+					{
+						FPFGE_StatGameplayEffects::ApplyCoin(KillerASC, 10.f);
+					}
 				}
 
 				OnHealthIsZero.Broadcast();
@@ -113,13 +126,13 @@ void UPFAttributeSet::PostGameplayEffectExecute(const FGameplayEffectModCallback
 		float RemainingExperience = FMath::Max(0.f, GetExperience());
 		int32 CurrentLevel = FMath::Max(1, FMath::FloorToInt(GetLevel()));
 		const int32 PreviousLevel = CurrentLevel;
-		float RequiredExperience = static_cast<float>(CurrentLevel) * 100.f;
+		float RequiredExperience = GetRequiredExperience(CurrentLevel);
 
 		while (RemainingExperience >= RequiredExperience)
 		{
 			RemainingExperience -= RequiredExperience;
 			++CurrentLevel;
-			RequiredExperience = static_cast<float>(CurrentLevel) * 100.f;
+			RequiredExperience = GetRequiredExperience(CurrentLevel);
 		}
 
 		const int32 GainedLevelCount = CurrentLevel - PreviousLevel;

@@ -1,6 +1,7 @@
 
 
 #include "Character/TwinBlast/PFTwinBlast.h"
+#include "System/Subsystems/PFGameInstanceSubsystem.h"
 #include "Animation/PFAnimInst_TwinBlast.h"
 #include "AbilitySystemComponent.h"
 #include "GAS/PFGameplayTags.h"
@@ -26,6 +27,9 @@ APFTwinBlast::APFTwinBlast() : ShootLeft(true), UltGun(nullptr), UltShoulderEffe
 	UltimateAbilityClass = UPFGA_Ultimate_TwinBlast::StaticClass();
 
 	SetMesh();
+	static ConstructorHelpers::FObjectFinder<USkeletalMesh> ARMS(TEXT("/Game/GameData/Characters/FirstPerson/SK_Twinblast_Arms.SK_Twinblast_Arms"));
+	FirstPersonMeshAsset = ARMS.Object;
+	FirstPersonNeckOffset = FVector(-20.f, 0.f, -16.f);
 	SetParticle();
 	SetSound();
 }
@@ -55,7 +59,7 @@ void APFTwinBlast::GiveUltimateAttackAbility()
 void APFTwinBlast::PostInitializeComponents()
 {
 	PFAnim = Cast<UPFAnimInst_TwinBlast>(GetMesh()->GetAnimInstance());
-	PFCHECK(nullptr != PFAnim);
+	checkf(PFAnim, TEXT("TwinBlast AnimInstance is required"));
 	Super::PostInitializeComponents();
 
 	GetMesh()->SetCollisionProfileName(TEXT("PFCharacter"));
@@ -85,6 +89,8 @@ void APFTwinBlast::EndPlay(const EEndPlayReason::Type EndPlayReason)
 void APFTwinBlast::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+	if (UltGun) UltGun->SetFirstPersonPresentation(IsFirstPersonPresentationActive() ? GetPresentationMesh() : nullptr);
+	if (UltShoulderEffect) UltShoulderEffect->SetOwnerNoSee(IsFirstPersonPresentationActive());
 
 	// 궁극기 이동 속도 적용
 	if (IsUltimateActive())
@@ -104,97 +110,35 @@ void APFTwinBlast::OnRep_FinalDir()
 
 void APFTwinBlast::SetMesh()
 {
-	// 트윈블라스트 메시 설정
-	static ConstructorHelpers::FObjectFinder<USkeletalMesh> TWINBLAST(TEXT("/Game/ParagonTwinblast/Characters/Heroes/TwinBlast/Meshes/TwinBlast.TwinBlast"));
-	if (TWINBLAST.Succeeded())
-	{
-		GetMesh()->SetSkeletalMesh(TWINBLAST.Object);
-	}
-	else
-	{
-		PFLOG(Fatal, TEXT("Mesh Failed"));
-	}
-
-	// 트윈블라스트 애니메이션 연결
-	GetMesh()->SetAnimationMode(EAnimationMode::AnimationBlueprint);
-
-	static ConstructorHelpers::FClassFinder<UPFAnimInst_TwinBlast> PORTFOLIO_BLUEPRINT(TEXT("/Game/ParagonTwinblast/Characters/Heroes/TwinBlast/TwinBlast_Blueprint.TwinBlast_Blueprint_C"));
-
-	if (PORTFOLIO_BLUEPRINT.Succeeded())
-	{
-		PFLOG(Warning, TEXT("BluePrint Succeed"));
-		GetMesh()->SetAnimInstanceClass(PORTFOLIO_BLUEPRINT.Class);
-	}
-	else
-	{
-		PFLOG(Fatal, TEXT("BluePrint Failed"));
-	}
+	UPFGameInstanceSubsystem::ApplyCharacterMesh(GetMesh(), CHARACTER_TWINBLAST, true);
 	GetMesh()->SetIsReplicated(false);
 }
 
 void APFTwinBlast::SetParticle()
 {
-	// 총구, 궁극기 이펙트 로드
-	Particles.SetNum(etoi(PARTICLE_END));
-
-	Particles[etoi(MUZZLELEFT)] = LoadObject<UParticleSystem>(nullptr, TEXT("ParticleSystem'/Game/ParagonTwinblast/FX/Particles/"
-		"Abilities/Primary/FX/P_TwinBlast_Primary_MuzzleFlashLeft.P_TwinBlast_Primary_MuzzleFlashLeft'"));
-	if (!Particles[etoi(MUZZLELEFT)])
+	static const TCHAR* const Paths[] =
 	{
-		PFLOG(Warning, TEXT("MuzzleLeft Failed"));
-	}
-	Particles[etoi(MUZZLERIGHT)] = LoadObject<UParticleSystem>(nullptr, TEXT("ParticleSystem'/Game/ParagonTwinblast/FX/Particles/"
-		"Abilities/Primary/FX/P_TwinBlast_Primary_MuzzleFlash.P_TwinBlast_Primary_MuzzleFlash'"));
-	if (!Particles[etoi(MUZZLERIGHT)])
-	{
-		PFLOG(Warning, TEXT("MuzzleRight Failed"));
-	}
-	Particles[etoi(ULTMUZZLELEFT)] = LoadObject<UParticleSystem>(nullptr, TEXT("ParticleSystem'/Game/ParagonTwinblast/FX/Particles/"
-		"Abilities/Ultimate/FX/P_TwinBlast_Ultimate_MuzzleFlash_L.P_TwinBlast_Ultimate_MuzzleFlash_L'"));
-	if (!Particles[etoi(ULTMUZZLELEFT)])
-	{
-		PFLOG(Warning, TEXT("UltMuzzleLeft Failed"));
-	}
-	Particles[etoi(ULTMUZZLERIGHT)] = LoadObject<UParticleSystem>(nullptr, TEXT("ParticleSystem'/Game/ParagonTwinblast/FX/Particles/"
-		"Abilities/Ultimate/FX/P_TwinBlast_Ultimate_MuzzleFlash_L.P_TwinBlast_Ultimate_MuzzleFlash_L'"));
-	if (!Particles[etoi(ULTMUZZLERIGHT)])
-	{
-		PFLOG(Warning, TEXT("UltMuzzleRight Failed"));
-	}
-	Particles[etoi(ULTACTIVATE)] = LoadObject<UParticleSystem>(nullptr, TEXT("ParticleSystem'/Game/ParagonTwinblast/FX/Particles/"
-		"Abilities/Ultimate/FX/P_Activate_Ult_Reticules.P_Activate_Ult_Reticules'"));
-	if (!Particles[etoi(ULTACTIVATE)])
-	{
-		PFLOG(Warning, TEXT("UltActivate Failed"));
-	}
-	Particles[etoi(ULTSHOULDER)] = LoadObject<UParticleSystem>(nullptr, TEXT("ParticleSystem'/Game/MyFiles/FX/"
-		"P_TwinBlast_Ult2_ShouldersLooping_UE58Fix.P_TwinBlast_Ult2_ShouldersLooping_UE58Fix'"));
-	if (!Particles[etoi(ULTSHOULDER)])
-	{
-		PFLOG(Warning, TEXT("UltShoulder Failed"));
-	}
+		TEXT("ParticleSystem'/Game/ParagonTwinblast/FX/Particles/Abilities/Primary/FX/P_TwinBlast_Primary_MuzzleFlashLeft.P_TwinBlast_Primary_MuzzleFlashLeft'"),
+		TEXT("ParticleSystem'/Game/ParagonTwinblast/FX/Particles/Abilities/Primary/FX/P_TwinBlast_Primary_MuzzleFlash.P_TwinBlast_Primary_MuzzleFlash'"),
+		TEXT("ParticleSystem'/Game/ParagonTwinblast/FX/Particles/Abilities/Ultimate/FX/P_TwinBlast_Ultimate_MuzzleFlash_L.P_TwinBlast_Ultimate_MuzzleFlash_L'"),
+		TEXT("ParticleSystem'/Game/ParagonTwinblast/FX/Particles/Abilities/Ultimate/FX/P_TwinBlast_Ultimate_MuzzleFlash_L.P_TwinBlast_Ultimate_MuzzleFlash_L'"),
+		TEXT("ParticleSystem'/Game/ParagonTwinblast/FX/Particles/Abilities/Ultimate/FX/P_Activate_Ult_Reticules.P_Activate_Ult_Reticules'"),
+		TEXT("ParticleSystem'/Game/MyFiles/FX/P_TwinBlast_Ult2_ShouldersLooping_UE58Fix.P_TwinBlast_Ult2_ShouldersLooping_UE58Fix'")
+	};
+	static_assert(UE_ARRAY_COUNT(Paths) == etoi(PARTICLE_END));
+	UPFGameInstanceSubsystem::LoadAssets(Particles, Paths);
 }
 
 void APFTwinBlast::SetSound()
 {
-	// 발사, 피격 사운드 로드
-	Sounds.SetNum(etoi(SOUND_END));
-
-	Sounds[etoi(SHOOT)] = LoadObject<USoundBase>(nullptr, TEXT("SoundCue'/Game/Free_Sounds_Pack/wav/Explosion_Medium_2-1.Explosion_Medium_2-1'"));
-	if (!Sounds[etoi(SHOOT)])
+	static const TCHAR* const Paths[] =
 	{
-		PFLOG(Warning, TEXT("ShootSound Failed"));
-	}
-	Sounds[etoi(ULTSHOOT)] = LoadObject<USoundBase>(nullptr, TEXT("SoundCue'/Game/Free_Sounds_Pack/wav/Explosion_Large_1-1.Explosion_Large_1-1'"));
-	if (!Sounds[etoi(ULTSHOOT)])
-	{
-		PFLOG(Warning, TEXT("UltShootSound Failed"));
-	}
-	Sounds[etoi(HIT)] = LoadObject<USoundBase>(nullptr, TEXT("SoundCue'/Game/Free_Sounds_Pack/wav/Hit_Generic_2-1.Hit_Generic_2-1'"));
-	if (!Sounds[etoi(HIT)])
-	{
-		PFLOG(Warning, TEXT("HitSound Failed"));
-	}
+		TEXT("SoundCue'/Game/Free_Sounds_Pack/wav/Explosion_Medium_2-1.Explosion_Medium_2-1'"),
+		TEXT("SoundCue'/Game/Free_Sounds_Pack/wav/Explosion_Large_1-1.Explosion_Large_1-1'"),
+		TEXT("SoundCue'/Game/Free_Sounds_Pack/wav/Hit_Generic_2-1.Hit_Generic_2-1'")
+	};
+	static_assert(UE_ARRAY_COUNT(Paths) == etoi(SOUND_END));
+	UPFGameInstanceSubsystem::LoadAssets(Sounds, Paths);
 }
 
 void APFTwinBlast::Jump()
@@ -214,7 +158,7 @@ bool APFTwinBlast::CanSprint() const
 
 TSubclassOf<UGameplayAbility> APFTwinBlast::GetAttackAbilityClass() const
 {
-	const FGameplayTag UltimateStateTag = FGameplayTag::RequestGameplayTag(FName("Character.State.Ultimate"));
+	const FGameplayTag UltimateStateTag = PFGameplayTags::Character_State_Ultimate;
 	return ASC && ASC->HasMatchingGameplayTag(UltimateStateTag)
 		? UltimateAttackAbilityClass
 		: AttackAbilityClass;
@@ -247,7 +191,7 @@ void APFTwinBlast::UltimateTagChanged(FGameplayTag StateTag, int32 NewCount)
 // 궁극기 전환 상태 반영
 void APFTwinBlast::ApplyUltimateState()
 {
-	if (!PFAnim || IsDeadCharacter())
+	if (IsDeadCharacter())
 	{
 		return;
 	}
@@ -284,7 +228,7 @@ void APFTwinBlast::GameplayCue_Character_Attack_Twinblast_Normal_Montage(
 	EGameplayCueEvent::Type EventType,
 	const FGameplayCueParameters& Parameters)
 {
-	if (EventType != EGameplayCueEvent::Executed || !PFAnim)
+	if (EventType != EGameplayCueEvent::Executed)
 	{
 		return;
 	}
@@ -299,8 +243,8 @@ void APFTwinBlast::GameplayCue_Character_Attack_Twinblast_Ultimate_Montage(
 	const FGameplayCueParameters& Parameters)
 {
 	(void)Parameters;
-	UPFAnimInst_TwinBlast* TwinBlastAnim = Cast<UPFAnimInst_TwinBlast>(PFAnim);
-	if (EventType == EGameplayCueEvent::Executed && TwinBlastAnim && !TwinBlastAnim->IsUltimateAttackMontagePlaying())
+	UPFAnimInst_TwinBlast* TwinBlastAnim = static_cast<UPFAnimInst_TwinBlast*>(PFAnim);
+	if (EventType == EGameplayCueEvent::Executed && !TwinBlastAnim->IsUltimateAttackMontagePlaying())
 	{
 		TwinBlastAnim->PlayMontage(etoi(UPFAnimInst_TwinBlast::MTGIDX_TB::ULTATTACK));
 	}
@@ -311,16 +255,29 @@ void APFTwinBlast::GameplayCue_Character_Attack_Twinblast_Normal_Shoot(
 	EGameplayCueEvent::Type EventType,
 	const FGameplayCueParameters& Parameters)
 {
-	if (EventType != EGameplayCueEvent::Executed || GetNetMode() == NM_DedicatedServer)
+	if (EventType != EGameplayCueEvent::Executed
+		|| (Parameters.NormalizedMagnitude > 0.5f && IsLocallyControlled() && !HasAuthority()))
 	{
 		return;
 	}
+	PlayShotEffects(Parameters.RawMagnitude > 0.5f);
+}
 
-	const bool bGCShootLeft = Parameters.RawMagnitude > 0.5f;
-	const FName SocketName = bGCShootLeft ? FName("Muzzle_02") : FName("Muzzle_01");
-	const PARTICLE MuzzleParticle = bGCShootLeft ? MUZZLELEFT : MUZZLERIGHT;
-	UGameplayStatics::SpawnEmitterAttached(Particles[etoi(MuzzleParticle)], GetMesh(), SocketName, FVector::ZeroVector, FRotator::ZeroRotator, FVector(1.f), EAttachLocation::SnapToTarget, true);
-	UGameplayStatics::PlaySound2D(this, Sounds[etoi(SHOOT)]);
+// 총구 효과, 발사음 재생
+void APFTwinBlast::PlayShotEffects(bool bShootLeft, bool bUltimate)
+{
+	if (GetNetMode() == NM_DedicatedServer) return;
+	const FName SocketName = bUltimate
+		? (bShootLeft ? FName("Muzzle_04") : FName("Muzzle_03"))
+		: (bShootLeft ? FName("Muzzle_02") : FName("Muzzle_01"));
+	const PARTICLE MuzzleParticle = bUltimate
+		? (bShootLeft ? ULTMUZZLELEFT : ULTMUZZLERIGHT) : (bShootLeft ? MUZZLELEFT : MUZZLERIGHT);
+	if (UParticleSystemComponent* Muzzle = UGameplayStatics::SpawnEmitterAttached(Particles[etoi(MuzzleParticle)], GetPresentationMesh(), SocketName, FVector::ZeroVector, FRotator::ZeroRotator, FVector(1.f), EAttachLocation::SnapToTarget, true))
+	{
+		Muzzle->SetOnlyOwnerSee(IsFirstPersonPresentationActive());
+		Muzzle->SetFirstPersonPrimitiveType(IsFirstPersonPresentationActive() ? EFirstPersonPrimitiveType::FirstPerson : EFirstPersonPrimitiveType::None);
+	}
+	UGameplayStatics::PlaySound2D(this, Sounds[etoi(bUltimate ? ULTSHOOT : SHOOT)]);
 }
 
 // 궁극기 발사 연출
@@ -328,16 +285,10 @@ void APFTwinBlast::GameplayCue_Character_Attack_Twinblast_Ultimate_Shoot(
 	EGameplayCueEvent::Type EventType,
 	const FGameplayCueParameters& Parameters)
 {
-	if (EventType != EGameplayCueEvent::Executed || GetNetMode() == NM_DedicatedServer)
+	if (EventType == EGameplayCueEvent::Executed)
 	{
-		return;
+		PlayShotEffects(Parameters.RawMagnitude > 0.5f, true);
 	}
-
-	const bool bGCShootLeft = Parameters.RawMagnitude > 0.5f;
-	const FName SocketName = bGCShootLeft ? FName("Muzzle_04") : FName("Muzzle_03");
-	const PARTICLE MuzzleParticle = bGCShootLeft ? ULTMUZZLELEFT : ULTMUZZLERIGHT;
-	UGameplayStatics::SpawnEmitterAttached(Particles[etoi(MuzzleParticle)], GetMesh(), SocketName, FVector::ZeroVector, FRotator::ZeroRotator, FVector(1.f), EAttachLocation::SnapToTarget, true);
-	UGameplayStatics::PlaySound2D(this, Sounds[etoi(ULTSHOOT)]);
 }
 
 // 궁극기 어깨 이펙트 재생
@@ -438,7 +389,7 @@ void APFTwinBlast::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLife
 // 플레이어 궁극기 총 준비
 void APFTwinBlast::EnsureUltimatePresentation()
 {
-	if (!IsPlayerCharacter() || IsValid(UltGun) || !GetWorld() || GetNetMode() == NM_DedicatedServer)
+	if (!IsPlayerCharacter() || IsValid(UltGun) || GetNetMode() == NM_DedicatedServer)
 	{
 		return;
 	}
@@ -447,6 +398,7 @@ void APFTwinBlast::EnsureUltimatePresentation()
 
 	if (UltGun)
 	{
+		UltGun->SetOwner(this);
 		UltGun->AttachToComponent(GetMesh(), FAttachmentTransformRules::SnapToTargetIncludingScale, FName("UltGunAttach"));
 		PFLOG(Warning, TEXT("UltGun Spawn Succeed"));
 	}

@@ -37,7 +37,6 @@ void AProjectile::ReturnToPool()
 	GetWorldTimerManager().ClearTimer(ReturnTimerHandle);
 	SourceAbility.Reset();
 
-	PFLOG(Warning, TEXT("Bullet Returned"));
 	bIsActive = false;
 	SetActorEnableCollision(false);
 	SetActorTickEnabled(false);

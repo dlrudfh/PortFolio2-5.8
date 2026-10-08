@@ -9,6 +9,7 @@
 #include "Character/PFCharacterControlTypes.h"
 #include "AbilitySystemComponent.h"
 #include "GameFramework/Character.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "GAS/Attributes/PFAttributeSet.h"
 #include "ActiveGameplayEffectHandle.h"
 #include "Abilities/GameplayAbility.h"
@@ -23,6 +24,7 @@ DECLARE_MULTICAST_DELEGATE_OneParam(FPFCharacterEvent, APFCharacter*);
 class USoundBase;
 class USoundConcurrency;
 class UPFShrubStealthComponent;
+class UPFFirstPersonMeshComponent;
 
 // 공통 캐릭터 클래스
 UCLASS(Abstract, meta=(PrioritizeCategories="PFCharacter UI GAS"))
@@ -54,6 +56,7 @@ public:
 	virtual void PreReplication(IRepChangedPropertyTracker& ChangedPropertyTracker) override;
 	virtual void Jump() override;
 
+	virtual void FellOutOfWorld(const UDamageType& DamageType) override;
 	virtual float TakeDamage(float DamageAmount, struct FDamageEvent const& DamageEvent, class AController* EventInstigator, AActor* DamageCauser) override;
 	bool ApplyAttackDamageTo(APFCharacter* Target, float Damage, AActor* Attacker,
 		const UGameplayAbility* AttackAbility = nullptr, const FHitResult* HitResult = nullptr);
@@ -62,6 +65,7 @@ public:
 	virtual float GetAimPitch() const;
 
 	float GetDamage() const;
+	float GetIncomingDamageMultiplier() const;
 	UPFAttributeSet* GetAttributeSet() const { return AttributeSet; }
 	bool IsDeadCharacter() const;
 	bool IsShrubConcealed() const;
@@ -85,6 +89,9 @@ public:
 	EPFDirection GetMovementInputDirection() const { return MovementInputDirection; }
 	class USpringArmComponent* GetCameraSpringArm() const { return SpringArm; }
 	class UCameraComponent* GetFollowCamera() const { return Camera; }
+	USkeletalMeshComponent* GetPresentationMesh() const;
+	bool IsFirstPersonPresentationActive() const { return bFirstPersonPresentationActive; }
+	void SetCampaignCameraActive(bool bActive);
 	float GetTurnSpeed() const { return TurnSpeed; }
 	float GetLookUpSpeed() const { return LookUpSpeed; }
 
@@ -103,13 +110,12 @@ public:
 	void ActivateUltimateAbility();
 	virtual bool CanSprint() const;
 
-	bool GetHP(float Value);
-	bool GetMP(float Value);
-	bool GetShield();
-	bool GetCoin(float Value);
+	bool RestoreHealth(float Value);
+	bool RestoreMana(float Value);
+	bool GrantShield();
+	bool AddCoin(float Value);
 	float GetMana() const;
 	bool TryUseMana(float ManaCost);
-	void PlayPickupNiagara(ENIAGARAID PickupNiagara);
 	FPFCharacterSharedStateSnapshot CaptureViewState() const;
 	void ApplyViewState(const FPFCharacterSharedStateSnapshot& Snapshot);
 
@@ -126,6 +132,7 @@ protected:
 	virtual void InitAbilityActorInfo();
 	void GivePlayerAbilities();
 	void RefreshControlRole();
+	void UpdateFirstPersonPresentation();
 	UFUNCTION()
 	void OnRep_CharacterRole();
 	UFUNCTION()
@@ -137,8 +144,6 @@ protected:
 	virtual void SetDir();
 	void PressAttackAbilityInput();
 	void ReleaseAttackAbilityInput();
-	UFUNCTION(NetMulticast, Unreliable)
-	void Multicast_Niagara(ENIAGARAID NiagaraID);
 	UFUNCTION()
 	void GameplayCue_Item_Use_HP(EGameplayCueEvent::Type EventType, const FGameplayCueParameters& Parameters);
 	UFUNCTION()
@@ -152,8 +157,6 @@ protected:
 	void GiveAttackAbility();
 	FGameplayAbilitySpecHandle GetOrGiveAbility(TSubclassOf<UGameplayAbility> AbilityClass, int32 AbilityLevel);
 
-	void AddTag(FName TagName, int Value);
-	void SetTag(FName TagName, bool Value);
 	virtual void SetBlockTags(bool bBlocked);
 	void UpdateAirborneTag();
 	void InitGASStats();
@@ -200,6 +203,8 @@ protected:
 	EPFCharacterRole CharacterRole = EPFCharacterRole::ROLE_END;
 	UPROPERTY(EditDefaultsOnly, Category = "AI")
 	FPFCharacterAISettings AISettings;
+	float AttackDamageMultiplier = 1.f;
+	float IncomingDamageMultiplier = 1.f;
 	UPROPERTY(Replicated)
 	float ReplicatedAimPitch = 0.f;
 
@@ -209,6 +214,22 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, Category = Camera)
 	class UCameraComponent* Camera;
+
+	// 팔, 무기 전용 메시
+	UPROPERTY(EditDefaultsOnly, Category = "Camera|First Person")
+	TObjectPtr<USkeletalMesh> FirstPersonMeshAsset;
+	UPROPERTY(EditDefaultsOnly, Category = "Camera|First Person", meta = (Units = "cm"))
+	FVector FirstPersonNeckOffset = FVector(-20.f, 0.f, -16.f);
+	UPROPERTY(EditDefaultsOnly, Category = "Camera|First Person", meta = (ClampMin = "60", ClampMax = "130"))
+	float FirstPersonFieldOfView = 105.f;
+	UPROPERTY(Transient)
+	TObjectPtr<UPFFirstPersonMeshComponent> FirstPersonMesh;
+	bool bFirstPersonPresentationActive = false;
+	bool bCampaignCameraActive = false;
+	bool bSavedBodyOwnerNoSee = false;
+	int32 SavedBodyForcedLOD = 0;
+	EVisibilityBasedAnimTickOption SavedBodyAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPose;
+	EFirstPersonPrimitiveType SavedBodyPrimitiveType = EFirstPersonPrimitiveType::None;
 
 	// 재생 중인 실드 이펙트
 	UPROPERTY(Transient)

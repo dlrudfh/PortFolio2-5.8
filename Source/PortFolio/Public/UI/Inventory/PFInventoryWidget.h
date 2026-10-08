@@ -6,6 +6,26 @@
 #include "PFInventoryWidget.generated.h"
 
 class UTexture2D;
+struct FPFInventorySlot;
+
+// 슬롯 표시 요소
+USTRUCT()
+struct FPFInventorySlotWidgets
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TObjectPtr<class UBorder> Border = nullptr;
+	UPROPERTY()
+	TObjectPtr<class UImage> Image = nullptr;
+	UPROPERTY()
+	TObjectPtr<class UTextBlock> CountText = nullptr;
+	UPROPERTY()
+	TObjectPtr<class UPFCooldownOverlayWidget> CooldownOverlay = nullptr;
+	UPROPERTY()
+	TObjectPtr<class UTextBlock> CooldownText = nullptr;
+	int32 DisplayedCooldownSeconds = INDEX_NONE;
+};
 
 // 인벤토리, 퀵슬롯 위젯
 UCLASS()
@@ -44,15 +64,12 @@ private:
 
 	void UpdateDragPreviewPosition(const FVector2D& ScreenSpacePosition);
 
-	int32 FindInventorySlotIndexAtScreenPosition(const FVector2D& ScreenSpacePosition) const;
+	void BindSlotWidgets(TArray<FPFInventorySlotWidgets>& Slots, int32 Count, const TCHAR* Prefix);
+	int32 FindSlotIndexAtScreenPosition(const TArray<FPFInventorySlotWidgets>& Slots, const FVector2D& ScreenSpacePosition) const;
+	FPFInventorySlot GetDisplayedSlot(int32 SlotIndex, bool bQuickSlots) const;
+	void UpdateSlotAppearance(bool bQuickSlots);
 
-	int32 FindQuickSlotIndexAtScreenPosition(const FVector2D& ScreenSpacePosition) const;
-
-	void UpdateInventorySlotAppearance();
-
-	void UpdateQuickSlotAppearance();
-	void UpdateInventoryCooldowns();
-	void UpdateQuickSlotCooldowns();
+	void UpdateSlotCooldowns();
 
 	void RebuildDragPreview(int32 ItemID, int32 ItemCount);
 
@@ -83,39 +100,12 @@ private:
 	UPROPERTY()
 	class UBorder* TitleBarBorder = nullptr;
 
-	// 인벤토리 슬롯 표시 요소
+	// 인벤토리, 퀵슬롯 표시 요소
 	UPROPERTY()
-	TArray<class UBorder*> InventorySlotBorders;
+	TArray<FPFInventorySlotWidgets> InventorySlotWidgets;
 
 	UPROPERTY()
-	TArray<class UImage*> InventorySlotImages;
-
-	UPROPERTY()
-	TArray<class UTextBlock*> InventorySlotCountTexts;
-
-	// 인벤토리 쿨타임 표시
-	UPROPERTY()
-	TArray<class UPFCooldownOverlayWidget*> InventoryCooldownOverlays;
-
-	UPROPERTY()
-	TArray<class UTextBlock*> InventoryCooldownTexts;
-
-	// 퀵슬롯 표시 요소
-	UPROPERTY()
-	TArray<class UBorder*> QuickSlotBorders;
-
-	UPROPERTY()
-	TArray<class UImage*> QuickSlotImages;
-
-	UPROPERTY()
-	TArray<class UTextBlock*> QuickSlotCountTexts;
-
-	// 퀵슬롯 쿨타임 표시
-	UPROPERTY()
-	TArray<class UPFCooldownOverlayWidget*> QuickSlotCooldownOverlays;
-
-	UPROPERTY()
-	TArray<class UTextBlock*> QuickSlotCooldownTexts;
+	TArray<FPFInventorySlotWidgets> QuickSlotWidgets;
 
 	// 드래그 중인 아이템 표시
 	UPROPERTY()

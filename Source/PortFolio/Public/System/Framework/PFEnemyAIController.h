@@ -39,7 +39,9 @@ protected:
 	bool HasClearSightToTarget(const APFCharacter* Target) const;
 	void AcquireNearestPlayerTarget();
 
-	bool IsPlayerTargetValid(const APFCharacter* Candidate) const;
+	virtual bool IsPlayerTargetValid(const APFCharacter* Candidate) const;
+	virtual bool CanAcquireTarget(const APFCharacter* Candidate, const APFCharacter* Previous) const;
+	virtual bool HandleIdleMovement(float DeltaTime);
 
 	float GetTargetSurfaceDistance(const APFCharacter* Candidate) const;
 
@@ -47,8 +49,10 @@ protected:
 	virtual bool ShouldApproachTarget(const APFCharacter* Target, float SurfaceDistance) const;
 
 	void UpdateEnemyMovement(APFCharacter* Target, float SurfaceDistance, float DeltaTime);
+	void UpdateIdleNavigation(const FVector& Goal, float DeltaTime);
 
 	bool RefreshMovementPath(const APFCharacter* Target);
+	FPathFollowingRequestResult RequestMovement(const FVector& Goal, float AcceptanceRadius, bool bUsePathfinding, bool bCanStrafe);
 	bool TryStartNavigationRecovery();
 	void UpdateNavigationRecovery(float DeltaTime);
 

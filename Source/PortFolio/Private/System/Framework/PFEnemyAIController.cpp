@@ -1,6 +1,7 @@
 #include "System/Framework/PFEnemyAIController.h"
 
 #include "Character/PFCharacter.h"
+#include "Character/PFShrubStealthComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
@@ -169,6 +170,7 @@ void APFEnemyAIController::Tick(float DeltaTime)
 	APFCharacter* Target = TargetCharacter.Get();
 	if (!IsPlayerTargetValid(Target))
 	{
+		if (HandleIdleMovement(DeltaTime)) return;
 		ClearEnemyIntent();
 		if (bExecutingPathJump || bOutOfNavigation)
 		{
@@ -205,20 +207,16 @@ void APFEnemyAIController::AcquireNearestPlayerTarget()
 	TargetCharacter.Reset();
 
 	UWorld* World = GetWorld();
-	if (!World)
-	{
-		return;
-	}
-
 	float ClosestDistanceSquared = TNumericLimits<float>::Max();
 	for (FConstPlayerControllerIterator Iterator = World->GetPlayerControllerIterator(); Iterator; ++Iterator)
 	{
 		APlayerController* PlayerController = Iterator->Get();
 		APFCharacter* Candidate = PlayerController ? Cast<APFCharacter>(PlayerController->GetPawn()) : nullptr;
-		if (!IsPlayerTargetValid(Candidate))
+		if (!IsPlayerTargetValid(Candidate) || !CanAcquireTarget(Candidate, PreviousTarget.Get()))
 		{
 			continue;
 		}
+		RememberShrubAttacker(Candidate);
 
 		const float DistanceSquared = FVector::DistSquared2D(ControlledCharacter->GetActorLocation(), Candidate->GetActorLocation());
 		if (DistanceSquared < ClosestDistanceSquared)
@@ -235,12 +233,28 @@ void APFEnemyAIController::AcquireNearestPlayerTarget()
 	}
 }
 
-// 탐색 범위 내 은신 중 공격자 기억
+// 기본 적의 탐색 조건 유지
+bool APFEnemyAIController::CanAcquireTarget(const APFCharacter* Candidate, const APFCharacter* Previous) const
+{
+	return true;
+}
+
+// 기본 적의 대기 동작 유지
+bool APFEnemyAIController::HandleIdleMovement(float DeltaTime)
+{
+	return false;
+}
+
+// 공격으로 은신이 풀린 플레이어 감지 기억
 void APFEnemyAIController::RememberShrubAttacker(APFCharacter* Attacker)
 {
-	if (!HasAuthority() || !ControlledCharacter.IsValid() || ControlledCharacter->IsDeadCharacter() || !IsValid(Attacker)
-		|| !Attacker->IsPlayerCharacter() || Attacker->IsDeadCharacter() || !Attacker->IsShrubConcealed()
-		|| FVector::DistSquared2D(ControlledCharacter->GetActorLocation(), Attacker->GetActorLocation()) > FMath::Square(TargetSearchRadius))
+	if (!HasAuthority() || !ControlledCharacter.IsValid() || ControlledCharacter->IsDeadCharacter()
+		|| !IsPlayerTargetValid(Attacker) || Attacker->IsShrubConcealed() || RevealedAttackers.Contains(Attacker))
+	{
+		return;
+	}
+	const UPFShrubStealthComponent* Stealth = Attacker->FindComponentByClass<UPFShrubStealthComponent>();
+	if (!Stealth || !Stealth->IsRevealedByAttack())
 	{
 		return;
 	}
@@ -266,14 +280,9 @@ bool APFEnemyAIController::IsPlayerTargetValid(const APFCharacter* Candidate) co
 // 캡슐 표면 사이 거리 계산
 float APFEnemyAIController::GetTargetSurfaceDistance(const APFCharacter* Candidate) const
 {
-	if (!Candidate)
-	{
-		return TNumericLimits<float>::Max();
-	}
-
 	const float CenterDistance = FVector::Dist2D(ControlledCharacter->GetActorLocation(), Candidate->GetActorLocation());
-	const float OwnRadius = ControlledCharacter->GetCapsuleComponent() ? ControlledCharacter->GetCapsuleComponent()->GetScaledCapsuleRadius() : 0.f;
-	const float TargetRadius = Candidate->GetCapsuleComponent() ? Candidate->GetCapsuleComponent()->GetScaledCapsuleRadius() : 0.f;
+	const float OwnRadius = ControlledCharacter->GetCapsuleComponent()->GetScaledCapsuleRadius();
+	const float TargetRadius = Candidate->GetCapsuleComponent()->GetScaledCapsuleRadius();
 	const float HorizontalDistance = FMath::Max(0.f, CenterDistance - OwnRadius - TargetRadius);
 	const float HeightDifference = FMath::Abs(ControlledCharacter->GetCharacterMovement()->GetActorFeetLocation().Z
 		- Candidate->GetCharacterMovement()->GetActorFeetLocation().Z);
@@ -283,17 +292,16 @@ float APFEnemyAIController::GetTargetSurfaceDistance(const APFCharacter* Candida
 // 공격 거리 조건 확인
 bool APFEnemyAIController::ShouldAttackTarget(const APFCharacter* Target, float SurfaceDistance) const
 {
-	return IsPlayerTargetValid(Target) && SurfaceDistance <= CombatSettings.AttackRange
+	return SurfaceDistance <= CombatSettings.AttackRange
 		&& (!CombatSettings.bRequiresLineOfSight || HasClearSightToTarget(Target));
 }
 
 // 대상 접근 조건 확인
 bool APFEnemyAIController::ShouldApproachTarget(const APFCharacter* Target, float SurfaceDistance) const
 {
-	return IsPlayerTargetValid(Target)
-		&& (!IsTargetAtMovementHeight(Target)
-			|| SurfaceDistance > CombatSettings.DesiredCombatDistance + CombatSettings.DistanceTolerance
-			|| (CombatSettings.bRequiresLineOfSight && !HasClearSightToTarget(Target)));
+	return !IsTargetAtMovementHeight(Target)
+		|| SurfaceDistance > CombatSettings.DesiredCombatDistance + CombatSettings.DistanceTolerance
+		|| (CombatSettings.bRequiresLineOfSight && !HasClearSightToTarget(Target));
 }
 
 // 대상과의 전투 거리 유지
@@ -439,6 +447,52 @@ void APFEnemyAIController::UpdateEnemyMovement(APFCharacter* Target, float Surfa
 	}
 }
 
+// 이동 요청의 공통 설정, 이전 요청 분리
+FPathFollowingRequestResult APFEnemyAIController::RequestMovement(const FVector& Goal, float AcceptanceRadius,
+	bool bUsePathfinding, bool bCanStrafe)
+{
+	FAIMoveRequest Request(Goal);
+	Request.SetUsePathfinding(bUsePathfinding);
+	Request.SetAllowPartialPath(bUsePathfinding);
+	Request.SetRequireNavigableEndLocation(false);
+	Request.SetProjectGoalLocation(false);
+	Request.SetCanStrafe(bCanStrafe);
+	if (bUsePathfinding)
+	{
+		Request.SetNavigationFilter(UPFNavigationQueryFilter::StaticClass());
+	}
+	Request.SetAcceptanceRadius(AcceptanceRadius);
+	Request.SetReachTestIncludesAgentRadius(false);
+	Request.SetReachTestIncludesGoalRadius(false);
+	GetPathFollowingComponent()->SetPreciseReachThreshold(0.f,
+		ControlledCharacter->GetCharacterMovement()->MaxStepHeight
+		/ FMath::Max(1.f, ControlledCharacter->GetCapsuleComponent()->GetScaledCapsuleHalfHeight()));
+	ActiveMoveRequest = FAIRequestID::InvalidRequest;
+	bWaitingAtPathEnd = false;
+	return MoveTo(Request);
+}
+
+// 복귀, 순찰 경로의 점프, 낙하, 이동 갱신
+void APFEnemyAIController::UpdateIdleNavigation(const FVector& Goal, float DeltaTime)
+{
+	bRetreating = false;
+	UpdateEnemyMovement(nullptr, 0.f, DeltaTime);
+	UCharacterMovementComponent* Movement = ControlledCharacter->GetCharacterMovement();
+	if (bExecutingPathJump || bOutOfNavigation || Movement->IsFalling() || ControlledCharacter->IsMovementBlocked()) return;
+
+	const float Now = GetWorld()->GetTimeSeconds();
+	if (Now >= NextPathRequestTime && GetMoveStatus() != EPathFollowingStatus::Moving)
+	{
+		NextPathRequestTime = Now + .5f;
+		const FPathFollowingRequestResult Result = RequestMovement(Goal, 70.f, true, false);
+		if (Result.Code == EPathFollowingRequestResult::RequestSuccessful) ActiveMoveRequest = Result.MoveId;
+	}
+	if (GetMoveStatus() == EPathFollowingStatus::Moving) WatchMovementProgress(DeltaTime);
+	const FVector Velocity = ControlledCharacter->GetVelocity();
+	if (!Velocity.IsNearlyZero()) RotateEnemyTowards(Velocity, DeltaTime);
+	SetEnemyDirection(Velocity.Size2D() > 5.f ? FWD : IDLE);
+}
+
 // 현재 NavMesh에서 추적, 후퇴 경로 요청
 bool APFEnemyAIController::RefreshMovementPath(const APFCharacter* Target)
 {
@@ -504,25 +558,8 @@ bool APFEnemyAIController::RefreshMovementPath(const APFCharacter* Target)
 		}
 		GoalFeet = RetreatGoal.Location;
 	}
-	FAIMoveRequest Request(GoalFeet);
-	Request.SetUsePathfinding(true);
-	Request.SetAllowPartialPath(true);
-	Request.SetRequireNavigableEndLocation(false);
-	Request.SetProjectGoalLocation(false);
-	Request.SetCanStrafe(bRetreating);
-	Request.SetNavigationFilter(UPFNavigationQueryFilter::StaticClass());
-	Request.SetAcceptanceRadius(5.f);
-	Request.SetReachTestIncludesAgentRadius(false);
-	Request.SetReachTestIncludesGoalRadius(false);
-	// 다른 층을 도착으로 판정하지 않도록 높이 오차 제한
-	GetPathFollowingComponent()->SetPreciseReachThreshold(0.f,
-		ControlledCharacter->GetCharacterMovement()->MaxStepHeight
-		/ FMath::Max(1.f, ControlledCharacter->GetCapsuleComponent()->GetScaledCapsuleHalfHeight()));
 	TGuardValue<TOptional<FVector>> StartGuard(PathRequestStart, TOptional<FVector>(NavStart.Location));
-	// 이전 요청의 완료 콜백을 분리하고 이동 중 새 경로로 교체
-	ActiveMoveRequest = FAIRequestID::InvalidRequest;
-	bWaitingAtPathEnd = false;
-	const FPathFollowingRequestResult Result = MoveTo(Request);
+	const FPathFollowingRequestResult Result = RequestMovement(GoalFeet, 5.f, true, bRetreating);
 	if (Result.Code == EPathFollowingRequestResult::RequestSuccessful)
 	{
 		ActiveMoveRequest = Result.MoveId;
@@ -570,19 +607,7 @@ bool APFEnemyAIController::TryStartNavigationRecovery()
 		{
 			continue;
 		}
-		FAIMoveRequest Request(Destination.Location);
-		Request.SetUsePathfinding(false);
-		Request.SetProjectGoalLocation(false);
-		Request.SetAllowPartialPath(false);
-		Request.SetRequireNavigableEndLocation(false);
-		Request.SetAcceptanceRadius(5.f);
-		Request.SetReachTestIncludesAgentRadius(false);
-		Request.SetReachTestIncludesGoalRadius(false);
-		GetPathFollowingComponent()->SetPreciseReachThreshold(0.f,
-			Movement->MaxStepHeight / FMath::Max(1.f, ControlledPawn->GetCapsuleComponent()->GetScaledCapsuleHalfHeight()));
-		ActiveMoveRequest = FAIRequestID::InvalidRequest;
-		bWaitingAtPathEnd = false;
-		const FPathFollowingRequestResult Result = MoveTo(Request);
+		const FPathFollowingRequestResult Result = RequestMovement(Destination.Location, 5.f, false, false);
 		if (Result.Code == EPathFollowingRequestResult::RequestSuccessful)
 		{
 			ActiveMoveRequest = Result.MoveId;
@@ -1000,9 +1025,9 @@ void APFEnemyAIController::HandleCharacterReady(APFCharacter* ReadyCharacter)
 	NavigationASC = ReadyCharacter->GetAbilitySystemComponent();
 	if (UAbilitySystemComponent* ASC = NavigationASC.Get())
 	{
-		JumpTagHandle = ASC->RegisterGameplayTagEvent(FGameplayTag::RequestGameplayTag(TEXT("Character.Block.Jump")))
+		JumpTagHandle = ASC->RegisterGameplayTagEvent(PFGameplayTags::Character_Block_Jump)
 			.AddUObject(this, &APFEnemyAIController::HandleNavigationTagChanged);
-		MoveTagHandle = ASC->RegisterGameplayTagEvent(FGameplayTag::RequestGameplayTag(TEXT("Character.Block.Move")))
+		MoveTagHandle = ASC->RegisterGameplayTagEvent(PFGameplayTags::Character_Block_Move)
 			.AddUObject(this, &APFEnemyAIController::HandleNavigationTagChanged);
 	}
 	RequestNavigationRefresh();
@@ -1019,8 +1044,8 @@ void APFEnemyAIController::UnbindNavigationTags()
 {
 	if (UAbilitySystemComponent* ASC = NavigationASC.Get())
 	{
-		ASC->RegisterGameplayTagEvent(FGameplayTag::RequestGameplayTag(TEXT("Character.Block.Jump"))).Remove(JumpTagHandle);
-		ASC->RegisterGameplayTagEvent(FGameplayTag::RequestGameplayTag(TEXT("Character.Block.Move"))).Remove(MoveTagHandle);
+		ASC->RegisterGameplayTagEvent(PFGameplayTags::Character_Block_Jump).Remove(JumpTagHandle);
+		ASC->RegisterGameplayTagEvent(PFGameplayTags::Character_Block_Move).Remove(MoveTagHandle);
 	}
 	NavigationASC.Reset();
 	JumpTagHandle.Reset();
@@ -1044,8 +1069,7 @@ void APFEnemyAIController::GetExcludedJumpLinks(TSet<FNavLinkId>& OutLinks) cons
 // 전투 대기와 다른 층 접근 구분
 bool APFEnemyAIController::IsTargetAtMovementHeight(const APFCharacter* Target) const
 {
-	return Target && ControlledCharacter.IsValid()
-		&& FMath::Abs(Target->GetCharacterMovement()->GetActorFeetLocation().Z
+	return FMath::Abs(Target->GetCharacterMovement()->GetActorFeetLocation().Z
 			- ControlledCharacter->GetCharacterMovement()->GetActorFeetLocation().Z)
 			<= ControlledCharacter->GetCharacterMovement()->MaxStepHeight;
 }
@@ -1054,7 +1078,7 @@ bool APFEnemyAIController::IsTargetAtMovementHeight(const APFCharacter* Target) 
 bool APFEnemyAIController::IsPathJumpBlocked() const
 {
 	const UAbilitySystemComponent* ASC = ControlledCharacter.IsValid() ? ControlledCharacter->GetAbilitySystemComponent() : nullptr;
-	return bRetreating || (ASC && ASC->HasMatchingGameplayTag(FGameplayTag::RequestGameplayTag(FName("Character.Block.Jump"))));
+	return bRetreating || (ASC && ASC->HasMatchingGameplayTag(PFGameplayTags::Character_Block_Jump));
 }
 
 // 이동 방향으로 회전 보간
@@ -1101,35 +1125,22 @@ void APFEnemyAIController::ClearEnemyIntent()
 	SetEnemyDirection(IDLE);
 
 	// 수직 속도를 유지하며 추적 이동 중단
-	if (UCharacterMovementComponent* EnemyMovementComponent = ControlledCharacter->GetCharacterMovement())
-	{
-		EnemyMovementComponent->StopActiveMovement();
-		EnemyMovementComponent->Velocity.X = 0.f;
-		EnemyMovementComponent->Velocity.Y = 0.f;
-		EnemyMovementComponent->PendingLaunchVelocity = FVector::ZeroVector;
-		EnemyMovementComponent->UpdateComponentVelocity();
-	}
+	UCharacterMovementComponent* EnemyMovementComponent = ControlledCharacter->GetCharacterMovement();
+	EnemyMovementComponent->StopActiveMovement();
+	EnemyMovementComponent->Velocity.X = 0.f;
+	EnemyMovementComponent->Velocity.Y = 0.f;
+	EnemyMovementComponent->PendingLaunchVelocity = FVector::ZeroVector;
+	EnemyMovementComponent->UpdateComponentVelocity();
 }
 
 // 대상까지 시야 확인
 bool APFEnemyAIController::HasClearSightToTarget(const APFCharacter* Target) const
 {
-	if (!ControlledCharacter.IsValid() || !IsPlayerTargetValid(Target))
-	{
-		return false;
-	}
-
 	const FVector SightStart = ControlledCharacter->GetPawnViewLocation();
 	const FVector SightEnd = Target->GetPawnViewLocation();
 
 	UWorld* World = GetWorld();
-	if (!World)
-	{
-		return false;
-	}
-
 	FCollisionQueryParams SightQueryParams(SCENE_QUERY_STAT(EnemyTwinblastSight), false, ControlledCharacter.Get());
-	SightQueryParams.AddIgnoredActor(ControlledCharacter.Get());
 	FHitResult SightHit;
 	const bool bHasBlockingHit = World->LineTraceSingleByChannel(
 		SightHit,
@@ -1146,7 +1157,7 @@ float APFEnemyAIController::GetAimPitch() const
 {
 	const APFCharacter* ControlledPawn = ControlledCharacter.Get();
 	const APFCharacter* Target = TargetCharacter.Get();
-	if (!ControlledPawn || !IsPlayerTargetValid(Target))
+	if (!IsPlayerTargetValid(Target))
 	{
 		return 0.f;
 	}

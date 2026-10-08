@@ -1,12 +1,19 @@
 
 #include "System/Framework/PFGameMode.h"
+#include "System/Subsystems/PFGameInstanceSubsystem.h"
+#include "Campaign/PFCampaignDirector.h"
+#include "Campaign/PFCampaignSubsystem.h"
+#include "Campaign/PFCampaignEnemyController.h"
 
 #include "Projectile/Bullet.h"
 #include "Character/TwinBlast/PFTwinBlast.h"
 #include "System/Framework/PFPlayerState.h"
 #include "System/Framework/PFGameInstance.h"
+#include "System/Framework/PFSessionGameState.h"
 #include "System/Subsystems/PFWorldSubsystem.h"
 #include "System/Framework/PFPlayerController.h"
+#include "System/Framework/PFEnemyAIController.h"
+#include "System/Framework/PFTutorialManager.h"
 #include "Character/PFCharacter.h"
 
 #include "CollisionQueryParams.h"
@@ -15,10 +22,14 @@
 #include "Components/PrimitiveComponent.h"
 #include "Engine/StaticMeshActor.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
 #include "HAL/IConsoleManager.h"
 #include "Kismet/GameplayStatics.h"
 #include "Misc/PackageName.h"
 #include "NavigationSystem.h"
+#include "NavMesh/RecastNavMesh.h"
+#include "GameFramework/CharacterMovementComponent.h"
+#include "GameFramework/GameSession.h"
 #include "AbilitySystemComponent.h"
 #include "GAS/Attributes/PFAttributeSet.h"
 #include "GAS/Effects/PFGE_StatGameplayEffects.h"
@@ -26,12 +37,19 @@
 
 APFGameMode::APFGameMode()
 {
+	for (int32 Chapter : { 3, 4, 6, 8 })
+	{
+		auto& Definition = CampaignDefinitions.Emplace_GetRef(FSoftObjectPath(UPFCampaignDefinition::GetAssetPath(Chapter)));
+		Definition.ToSoftObjectPath().PostLoadPath(nullptr);
+	}
 	DefaultPawnClass = APFTwinBlast::StaticClass();
 	PlayerControllerClass = APFPlayerController::StaticClass();
 	PlayerStateClass = APFPlayerState::StaticClass();
-	TestMap2 = TSoftObjectPtr<UWorld>(FSoftObjectPath(TEXT("/Game/ThirdPerson/Maps/Map2.Map2")));
+	GameStateClass = APFSessionGameState::StaticClass();
+	bUseSeamlessTravel = true;
+	TutorialMap = TSoftObjectPtr<UWorld>(FSoftObjectPath(TEXT("/Game/ThirdPerson/Maps/Tutorial.Tutorial")));
 	TestMap3 = TSoftObjectPtr<UWorld>(FSoftObjectPath(TEXT("/Game/ThirdPerson/Maps/Map3.Map3")));
-	TestMap2.ToSoftObjectPath().PostLoadPath(nullptr);
+	TutorialMap.ToSoftObjectPath().PostLoadPath(nullptr);
 	TestMap3.ToSoftObjectPath().PostLoadPath(nullptr);
 	for (int32 MapIndex = 4; MapIndex <= 8; ++MapIndex)
 	{
@@ -41,18 +59,70 @@ APFGameMode::APFGameMode()
 	}
 }
 
+void APFGameMode::InitGameState()
+{
+	Super::InitGameState();
+	APFSessionGameState* Session = GetGameState<APFSessionGameState>();
+	if (!Session) return;
+	const FString ModeOption = UGameplayStatics::ParseOption(OptionsString, TEXT("PFMode"));
+	Session->Mode = ModeOption == TEXT("Campaign") ? EPFSessionMode::Story
+		: ModeOption == TEXT("Training") ? EPFSessionMode::Training : EPFSessionMode::Versus;
+	Session->Phase = UGameplayStatics::GetCurrentLevelName(this, true).Contains(TEXT("Title"))
+		? EPFSessionPhase::Menu : EPFSessionPhase::Playing;
+	Session->SelectedMap = FName(*UGameplayStatics::GetCurrentLevelName(this, true));
+	if (const UPFGameInstance* Instance = GetGameInstance<UPFGameInstance>())
+	{
+		Session->Capacity = FMath::Clamp(Instance->GetPendingSessionCapacity(), 1, APFSessionGameState::GetMaxPlayers(Session->Mode));
+		Session->RoomName = Instance->GetSessionRoomName();
+	}
+	Session->bInitialized = true;
+	Session->ForceNetUpdate();
+}
+
+void APFGameMode::PreLogin(const FString& Options, const FString& Address, const FUniqueNetIdRepl& UniqueId, FString& ErrorMessage)
+{
+	Super::PreLogin(Options, Address, UniqueId, ErrorMessage);
+	const UPFGameInstance* Instance = GetGameInstance<UPFGameInstance>();
+	if (Instance && Instance->HasSessionMatchStarted()
+		&& !UGameplayStatics::GetCurrentLevelName(this, true).Contains(TEXT("Title")))
+	{
+		ErrorMessage = TEXT("Match already started");
+	}
+}
+
+void APFGameMode::PostLogin(APlayerController* NewPlayer)
+{
+	const UPFGameInstance* Instance = GetGameInstance<UPFGameInstance>();
+	if (NewPlayer && !NewPlayer->IsLocalController() && Instance && Instance->HasSessionMatchStarted()
+		&& !UGameplayStatics::GetCurrentLevelName(this, true).Contains(TEXT("Title")))
+	{
+		if (!GameSession || !GameSession->KickPlayer(NewPlayer,
+			NSLOCTEXT("PFSession", "MatchAdmissionClosed", "This match has already started."))) NewPlayer->Destroy();
+		return;
+	}
+	Super::PostLogin(NewPlayer);
+}
+
 void APFGameMode::BeginPlay()
 {
 	Super::BeginPlay();
+	if (UPFCampaignSubsystem::IsCampaign(GetWorld()) && !APFCampaignDirector::Find(GetWorld()))
+		GetWorld()->SpawnActor<APFCampaignDirector>();
 
 	auto* Pool = GetWorld()->GetSubsystem<UPFWorldSubsystem>();
 	Pool->PreparePool(ABullet::StaticClass(), 10);
+
+	// 훈련 모드의 튜토리얼 관리자 생성
+	if (APFSessionGameState::IsTraining(GetWorld()) && !APFTutorialManager::Find(GetWorld()))
+	{
+		GetWorld()->SpawnActor<APFTutorialManager>();
+	}
 }
 
 void APFGameMode::HandleStartingNewPlayer_Implementation(APlayerController* NewPlayer)
 {
 	const UWorld* World = GetWorld();
-	if (!World || FPackageName::GetShortName(World->GetMapName()).Contains(TEXT("Title")))
+	if (FPackageName::GetShortName(World->GetMapName()).Contains(TEXT("Title")))
 	{
 		return;
 	}
@@ -65,6 +135,24 @@ void APFGameMode::HandleStartingNewPlayer_Implementation(APlayerController* NewP
 
 	// 로그인 준비와 캐릭터 선택이 모두 끝난 뒤 최초 생성
 	APFPlayerController* PlayerController = Cast<APFPlayerController>(NewPlayer);
+	if (!PlayerController->GetPawn() && PlayerController->bInitialSpawnComplete)
+	{
+		PlayerController->bInitialSpawnComplete = false;
+		PlayerController->bInitialSpawnInProgress = false;
+		PlayerController->SetCampaignWaiting(false);
+		if (APFPlayerState* State = PlayerController->GetPlayerState<APFPlayerState>())
+		{
+			PlayerController->InitialSpawnCharacter = State->GetCharacter();
+			PlayerController->bInitialSpawnRequested = true;
+		}
+	}
+	if (APFPlayerState* State = PlayerController->GetPlayerState<APFPlayerState>(); State && State->HasLobbySelection())
+	{
+		PlayerController->InitialSpawnCharacter = State->GetCharacter();
+		PlayerController->bInitialSpawnRequested = true;
+	}
+	PlayerController->bMapPresentationReady = false;
+	PlayerController->Client_PrepareMapPresentation(UPFCampaignSubsystem::IsCampaign(World));
 	PlayerController->bInitialSpawnReady = true;
 	TryStartInitialPlayer(PlayerController);
 }
@@ -72,7 +160,7 @@ void APFGameMode::HandleStartingNewPlayer_Implementation(APlayerController* NewP
 void APFGameMode::RestartPlayer(AController* NewPlayer)
 {
 	const UWorld* World = GetWorld();
-	if (!World || FPackageName::GetShortName(World->GetMapName()).Contains(TEXT("Title")))
+	if (FPackageName::GetShortName(World->GetMapName()).Contains(TEXT("Title")))
 	{
 		return;
 	}
@@ -90,18 +178,190 @@ void APFGameMode::RestartPlayer(AController* NewPlayer)
 	Super::RestartPlayer(NewPlayer);
 }
 
+// 지정 지면 위에 캠페인 적 생성
+APFCharacter* APFGameMode::SpawnCampaignEnemy(UClass* EnemyClass, const FTransform& GroundTransform)
+{
+	if (!EnemyClass || !EnemyClass->IsChildOf(APFCharacter::StaticClass())
+		|| !UPFCampaignSubsystem::IsCampaign(GetWorld())) return nullptr;
+	const APFCharacter* Default = EnemyClass->GetDefaultObject<APFCharacter>();
+	UNavigationSystemV1* Nav = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
+	FNavLocation Ground;
+	if (!Nav || !Nav->ProjectPointToNavigation(GroundTransform.GetLocation(), Ground, FVector(30.f, 30.f, 120.f))
+		|| FVector::DistSquared2D(Ground.Location, GroundTransform.GetLocation()) > FMath::Square(30.f)) return nullptr;
+	FActorSpawnParameters Parameters;
+	Parameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::DontSpawnIfColliding;
+	const FVector Location = Ground.Location + FVector(0.f, 0.f, Default->GetCapsuleComponent()->GetScaledCapsuleHalfHeight() + 2.f);
+	APFCharacter* Enemy = GetWorld()->SpawnActor<APFCharacter>(EnemyClass, Location, GroundTransform.Rotator(), Parameters);
+	if (!Enemy) return nullptr;
+	APFCampaignEnemyController* Controller = GetWorld()->SpawnActor<APFCampaignEnemyController>();
+	if (!Controller) { Enemy->Destroy(); return nullptr; }
+	Controller->Possess(Enemy);
+	if (Controller->GetPawn() != Enemy || !Enemy->GetAttributeSet())
+	{
+		Controller->Destroy();
+		Enemy->Destroy();
+		return nullptr;
+	}
+	return Enemy;
+}
+
+// 준비가 끝난 캠페인 참가자의 최초 생성 재시도
+void APFGameMode::RetryCampaignSpawns()
+{
+	for (auto It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+		if (APFPlayerController* Player = Cast<APFPlayerController>(It->Get()); Player && !Player->bInitialSpawnComplete)
+			TryStartInitialPlayer(Player);
+}
+
+// 캠페인 참가자의 맵 로딩, 캐릭터 선택 준비 확인
+bool APFGameMode::IsCampaignPartyReady() const
+{
+	bool bHasPlayers = false;
+	for (auto It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	{
+		APFPlayerController* Player = Cast<APFPlayerController>(It->Get());
+		if (!Player) return false;
+		bHasPlayers = true;
+		if (!Player->bInitialSpawnReady || !Player->bInitialSpawnRequested || !Player->bMapPresentationReady || Player->bInitialSpawnInProgress
+			|| !Player->HasClientLoadedCurrentWorld() || !Player->GetPlayerState<APFPlayerState>()) return false;
+	}
+	return bHasPlayers;
+}
+
+// 체크포인트의 지정 위치로 플레이어 복귀
+bool APFGameMode::RespawnCampaignPlayer(APFPlayerController* Player)
+{
+	if (!Player) return false;
+	FTransform Start;
+	if (!TryFindInitialPlayerSpawnTransform(Player, Start)) return false;
+	Player->CaptureCharacterState();
+	if (APawn* OldPawn = Player->GetPawn()) OldPawn->Destroy();
+	RestartPlayerAtTransform(Player, Start);
+	Player->bInitialSpawnComplete = IsValid(Player->GetPawn());
+	Player->bInitialSpawnInProgress = false;
+	Player->RestoreCharacterState();
+	return Player->bInitialSpawnComplete;
+}
+
+// NavMesh 위에 AI 캐릭터 생성
+APFCharacter* APFGameMode::SpawnEnemy(APFCharacter* ControlledPawn, UClass* EnemyClass)
+{
+	if (UPFCampaignSubsystem::IsCampaign(GetWorld())) return nullptr;
+	UWorld* World = GetWorld();
+	if (!IsValid(ControlledPawn) || ControlledPawn->GetWorld() != World
+		|| !ControlledPawn->IsPlayerCharacter() || ControlledPawn->IsDeadCharacter() || ControlledPawn->IsJumpPadFlightActive())
+	{
+		return nullptr;
+	}
+
+	const FString LevelName = FPackageName::GetShortName(World->GetMapName());
+	if (LevelName.Contains(TEXT("Title")))
+	{
+		return nullptr;
+	}
+
+	// 생성 조건 설정
+	const APFCharacter* EnemyDefaultObject = EnemyClass ? EnemyClass->GetDefaultObject<APFCharacter>() : nullptr;
+	const UCapsuleComponent* EnemyCapsule = EnemyDefaultObject ? EnemyDefaultObject->GetCapsuleComponent() : nullptr;
+	const UCharacterMovementComponent* EnemyMovement = EnemyDefaultObject ? EnemyDefaultObject->GetCharacterMovement() : nullptr;
+	UNavigationSystemV1* Navigation = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
+	if (!EnemyCapsule || !EnemyMovement || !Navigation)
+	{
+		PFLOG(Warning, TEXT("Enemy spawn failed: missing capsule, movement or navigation system"));
+		return nullptr;
+	}
+
+	// 스폰 전후 발밑의 NavMesh 확인
+	const auto IsOnSpawnNavMesh = [Navigation](const FVector& Feet,
+		const UCharacterMovementComponent* Movement, const UCapsuleComponent* Capsule)
+	{
+		FNavAgentProperties AgentProperties = Movement->GetNavAgentPropertiesRef();
+		if (Movement->ShouldUpdateNavAgentWithOwnersCollision())
+		{
+			AgentProperties.AgentRadius = Capsule->GetScaledCapsuleRadius();
+			AgentProperties.AgentHeight = Capsule->GetScaledCapsuleHalfHeight() * 2.f;
+		}
+		const ARecastNavMesh* NavMesh = Cast<ARecastNavMesh>(Navigation->GetNavDataForProps(AgentProperties, Feet));
+		constexpr float HorizontalTolerance = 1.f;
+		const float HeightRange = Movement->MaxStepHeight + 6.f;
+		FNavLocation NavLocation;
+		return NavMesh && Navigation->ProjectPointToNavigation(Feet, NavLocation,
+			FVector(HorizontalTolerance, HorizontalTolerance, HeightRange), NavMesh)
+			&& FVector::DistSquared2D(Feet, NavLocation.Location) <= FMath::Square(HorizontalTolerance)
+			&& FMath::Abs(NavLocation.Location.Z - Feet.Z) <= HeightRange;
+	};
+
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(EnemySpawn), false, ControlledPawn);
+	QueryParams.AddIgnoredActor(ControlledPawn);
+	FActorSpawnParameters SpawnParameters;
+	SpawnParameters.Instigator = ControlledPawn;
+	SpawnParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButDontSpawnIfColliding;
+
+	// 공통 탐색 반경 내 위치를 찾아 생성
+	const FVector SpawnCenter = ControlledPawn->GetActorLocation();
+	const float SpawnRadius = GetDefault<APFEnemyAIController>()->GetTargetSearchRadius();
+	int32 RemainingAttempts = 30;
+	FTransform SpawnTransform;
+	while (APFGameMode::FindSpawnTransform(World, EnemyCapsule, QueryParams, RemainingAttempts, false,
+		SpawnTransform, &SpawnCenter, SpawnRadius))
+	{
+		const FVector CandidateFeet = SpawnTransform.GetLocation() - FVector(0.f, 0.f, EnemyCapsule->GetScaledCapsuleHalfHeight());
+		if (!IsOnSpawnNavMesh(CandidateFeet, EnemyMovement, EnemyCapsule))
+		{
+			continue;
+		}
+		if (APFCharacter* SpawnedEnemy = World->SpawnActor<APFCharacter>(
+			EnemyClass, SpawnTransform.GetLocation(), SpawnTransform.Rotator(), SpawnParameters))
+		{
+			// 충돌 보정된 실제 위치 확인
+			const UCharacterMovementComponent* SpawnedMovement = SpawnedEnemy->GetCharacterMovement();
+			if (FVector::DistSquared2D(SpawnedEnemy->GetActorLocation(), SpawnCenter) > FMath::Square(SpawnRadius)
+				|| !IsOnSpawnNavMesh(SpawnedMovement->GetActorFeetLocation(),
+				SpawnedMovement, SpawnedEnemy->GetCapsuleComponent()))
+			{
+				SpawnedEnemy->Destroy();
+				continue;
+			}
+			SpawnedEnemy->SpawnDefaultController();
+			if (!SpawnedEnemy->GetController())
+			{
+				SpawnedEnemy->Destroy();
+				return nullptr;
+			}
+			PFLOG(Warning, TEXT("Enemy spawned: %s"), *SpawnedEnemy->GetClass()->GetName());
+			return SpawnedEnemy;
+		}
+	}
+
+	PFLOG(Warning, TEXT("Enemy spawn failed: no spawnable NavMesh ground found within %.0f cm"), SpawnRadius);
+	return nullptr;
+}
+
+// PIE 이동 허용값 보존, 서버 맵 이동
+bool APFGameMode::ServerTravel(UWorld* World, const FString& URL)
+{
+	IConsoleVariable* PIETravel = World->WorldType == EWorldType::PIE
+		? IConsoleManager::Get().FindConsoleVariable(TEXT("net.AllowPIESeamlessTravel")) : nullptr;
+	const int32 Previous = PIETravel ? PIETravel->GetInt() : 0;
+	if (PIETravel) PIETravel->SetWithCurrentPriority(1);
+	const bool bStarted = World->ServerTravel(URL, true);
+	if (PIETravel) PIETravel->SetWithCurrentPriority(Previous);
+	return bStarted;
+}
+
 // 테스트 맵 전환, 세션 연결 유지
 void APFGameMode::ChangeTestMap()
 {
+	if (UPFCampaignSubsystem::IsCampaign(GetWorld())) return;
 	UWorld* World = GetWorld();
-	if (!HasAuthority() || !World || World->IsInSeamlessTravel() || !World->NextURL.IsEmpty())
+	if (World->IsInSeamlessTravel() || !World->NextURL.IsEmpty())
 	{
 		return;
 	}
 
 	const FString CurrentMap = UGameplayStatics::GetCurrentLevelName(World, true);
 	FString Destination;
-	TArray<TSoftObjectPtr<UWorld>> Maps = { TestMap2, TestMap3 };
+	TArray<TSoftObjectPtr<UWorld>> Maps = { TutorialMap, TestMap3 };
 	Maps.Append(AdditionalTestMaps);
 	for (int32 Index = 0; Index < Maps.Num(); ++Index)
 	{
@@ -128,13 +388,8 @@ void APFGameMode::ChangeTestMap()
 		PlayerController->CaptureCharacterState();
 	}
 
-	// PIE에서도 데이터 보존 이동을 사용하고 기존 콘솔 값 복원
-	IConsoleVariable* PIETravel = World->WorldType == EWorldType::PIE
-		? IConsoleManager::Get().FindConsoleVariable(TEXT("net.AllowPIESeamlessTravel")) : nullptr;
-	const int32 PreviousPIETravel = PIETravel ? PIETravel->GetInt() : 0;
-	if (PIETravel) PIETravel->SetWithCurrentPriority(1);
-	const bool bTravelStarted = World->ServerTravel(Destination + TEXT("?SeamlessTravel"), true);
-	if (PIETravel) PIETravel->SetWithCurrentPriority(PreviousPIETravel);
+	const FString ModeOption = APFSessionGameState::IsVersus(World) ? TEXT("?PFMode=Versus") : FString();
+	const bool bTravelStarted = ServerTravel(GetWorld(), Destination + ModeOption + TEXT("?SeamlessTravel"));
 	if (!bTravelStarted)
 	{
 		PFLOG(Warning, TEXT("Test map travel failed: %s"), *Destination);
@@ -152,11 +407,13 @@ bool APFGameMode::UsesInitialSpawnFlow(AController* Controller) const
 // 최초 선택 캐릭터 접수
 void APFGameMode::RequestInitialSpawn(APFPlayerController* NewPlayer, ECHARACTER SelectedCharacter)
 {
-	if (!HasAuthority() || !UsesInitialSpawnFlow(NewPlayer)
+	if (!UsesInitialSpawnFlow(NewPlayer)
 		|| NewPlayer->bInitialSpawnComplete || NewPlayer->bInitialSpawnInProgress)
 	{
 		return;
 	}
+	const APFPlayerState* State = NewPlayer->GetPlayerState<APFPlayerState>();
+	if (State && State->HasLobbySelection()) SelectedCharacter = State->GetCharacter();
 	if (SelectedCharacter != CHARACTER_TWINBLAST && SelectedCharacter != CHARACTER_KWANG)
 	{
 		return;
@@ -173,7 +430,7 @@ void APFGameMode::RequestInitialSpawn(APFPlayerController* NewPlayer, ECHARACTER
 // 선택 캐릭터 최초 생성
 void APFGameMode::TryStartInitialPlayer(APFPlayerController* NewPlayer)
 {
-	if (!HasAuthority() || !IsValid(NewPlayer)
+	if (!IsValid(NewPlayer)
 		|| NewPlayer->bInitialSpawnComplete || NewPlayer->bInitialSpawnInProgress)
 	{
 		return;
@@ -183,7 +440,7 @@ void APFGameMode::TryStartInitialPlayer(APFPlayerController* NewPlayer)
 		NewPlayer->bInitialSpawnComplete = true;
 		return;
 	}
-	if (!NewPlayer->bInitialSpawnReady || !NewPlayer->bInitialSpawnRequested)
+	if (!NewPlayer->bInitialSpawnReady || !NewPlayer->bInitialSpawnRequested || !NewPlayer->bMapPresentationReady)
 	{
 		return;
 	}
@@ -196,15 +453,36 @@ void APFGameMode::TryStartInitialPlayer(APFPlayerController* NewPlayer)
 	}
 
 	NewPlayer->bInitialSpawnInProgress = true;
+	if (PlayerState->HasLobbySelection()) NewPlayer->InitialSpawnCharacter = PlayerState->GetCharacter();
 	PlayerState->SetCharacter(NewPlayer->InitialSpawnCharacter);
+	PlayerState->EnsureInitialInventoryItems();
+	if (UPFCampaignSubsystem::IsCampaign(GetWorld()))
+	{
+		APFCampaignDirector* Director = APFCampaignDirector::Find(GetWorld());
+		if (!Director || Director->DeferJoiningPlayer(NewPlayer))
+		{
+			NewPlayer->bInitialSpawnInProgress = false;
+			return;
+		}
+		PlayerState->PrepareCampaignCheckpoint();
+		if (UPFCampaignSubsystem* Run = UPFCampaignSubsystem::Get(this); Run && Run->Players.Contains(Run->PlayerKey(PlayerState)))
+		{
+			if (!Run->RestorePlayer(PlayerState))
+			{
+				NewPlayer->bInitialSpawnInProgress = false;
+				return;
+			}
+			NewPlayer->SetCampaignViewState(Run->Players.FindChecked(Run->PlayerKey(PlayerState)).View);
+		}
+	}
 
-	// 무작위 위치에 생성하고 실패하면 기본 시작 위치 사용
+	// 맵별 시작 위치에 생성하고 실패하면 기본 시작 위치 사용
 	FTransform SpawnTransform;
 	if (TryFindInitialPlayerSpawnTransform(NewPlayer, SpawnTransform))
 	{
 		RestartPlayerAtTransform(NewPlayer, SpawnTransform);
 	}
-	if (!IsValid(NewPlayer->GetPawn()))
+	if (!IsValid(NewPlayer->GetPawn()) && !UPFCampaignSubsystem::IsCampaign(GetWorld()))
 	{
 		Super::RestartPlayer(NewPlayer);
 	}
@@ -224,8 +502,13 @@ void APFGameMode::TryStartInitialPlayer(APFPlayerController* NewPlayer)
 // 플레이어 초기 생성 위치 탐색
 bool APFGameMode::TryFindInitialPlayerSpawnTransform(APlayerController* NewPlayer, FTransform& OutSpawnTransform)
 {
+	if (UPFCampaignSubsystem::IsCampaign(GetWorld()))
+	{
+		APFCampaignDirector* Director = APFCampaignDirector::Find(GetWorld());
+		return Director && Director->FindPlayerStart(Cast<APFPlayerController>(NewPlayer), OutSpawnTransform);
+	}
 	UWorld* World = GetWorld();
-	if (!World || !NewPlayer)
+	if (!NewPlayer)
 	{
 		return false;
 	}
@@ -239,6 +522,14 @@ bool APFGameMode::TryFindInitialPlayerSpawnTransform(APlayerController* NewPlaye
 	}
 
 	const FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(InitialPlayerSpawn), false, this);
+	if (APFSessionGameState::IsTraining(World))
+	{
+		// 상자 사이 바닥의 고정 시작점
+		const FVector GroundLocation(1544.f, 975.f, 5.f);
+		OutSpawnTransform = FTransform(FRotator(0.f, -90.f, 0.f),
+			GroundLocation + FVector(0.f, 0.f, PlayerCapsule->GetScaledCapsuleHalfHeight() + 2.f));
+		return true;
+	}
 	int32 RemainingAttempts = 30;
 	return FindSpawnTransform(World, PlayerCapsule, QueryParams, RemainingAttempts, true, OutSpawnTransform);
 }
@@ -249,7 +540,7 @@ bool APFGameMode::FindSpawnTransform(UWorld* World, const UCapsuleComponent* Cap
 	bool bCheckBlockingCollision, FTransform& OutSpawnTransform,
 	const FVector* SpawnCenter, float SpawnRadius)
 {
-	if (!World || RemainingAttempts <= 0 || (bCheckBlockingCollision && !Capsule)
+	if (RemainingAttempts <= 0
 		|| (SpawnCenter && SpawnRadius <= 0.f))
 	{
 		return false;
@@ -257,19 +548,17 @@ bool APFGameMode::FindSpawnTransform(UWorld* World, const UCapsuleComponent* Cap
 
 	constexpr float BoundsEdgePadding = 10.f;
 	constexpr float VerticalTracePadding = 1000.f;
-	const float CapsuleHalfHeight = Capsule ? Capsule->GetScaledCapsuleHalfHeight() : 88.f;
-	const float CapsuleRadius = Capsule ? Capsule->GetScaledCapsuleRadius() : 34.f;
+	const float CapsuleHalfHeight = Capsule->GetScaledCapsuleHalfHeight();
+	const float CapsuleRadius = Capsule->GetScaledCapsuleRadius();
 
 	// 생성 영역 액터 탐색
-	TArray<AActor*> StaticMeshActors;
-	UGameplayStatics::GetAllActorsOfClass(World, AStaticMeshActor::StaticClass(), StaticMeshActors);
 	AStaticMeshActor* SpawnAreaActor = nullptr;
-	for (AActor* CandidateActor : StaticMeshActors)
+	for (TActorIterator<AStaticMeshActor> It(World); It; ++It)
 	{
-		if (CandidateActor && (CandidateActor->ActorHasTag(TEXT("PFRequireNavigableSpawn"))
-			|| CandidateActor->GetActorNameOrLabel().Equals(TEXT("SM_Cube"), ESearchCase::CaseSensitive)))
+		if (It->ActorHasTag(TEXT("PFRequireNavigableSpawn"))
+			|| It->GetActorNameOrLabel().Equals(TEXT("SM_Cube"), ESearchCase::CaseSensitive))
 		{
-			SpawnAreaActor = Cast<AStaticMeshActor>(CandidateActor);
+			SpawnAreaActor = *It;
 			break;
 		}
 	}
@@ -297,11 +586,7 @@ bool APFGameMode::FindSpawnTransform(UWorld* World, const UCapsuleComponent* Cap
 	}
 
 	FCollisionObjectQueryParams ObjectQueryParams;
-	ECollisionChannel WallCollisionChannel;
-	if (!GetCollisionChannel(PFCollisionChannelNames::Wall, WallCollisionChannel))
-	{
-		return false;
-	}
+	static const ECollisionChannel WallCollisionChannel = GetCollisionChannel(PFCollisionChannelNames::Wall);
 	ObjectQueryParams.AddObjectTypesToQuery(ECC_WorldStatic);
 	ObjectQueryParams.AddObjectTypesToQuery(WallCollisionChannel);
 
@@ -366,8 +651,9 @@ bool APFGameMode::FindSpawnTransform(UWorld* World, const UCapsuleComponent* Cap
 // 사망 플레이어 부활
 void APFGameMode::RespawnPlayer(TWeakObjectPtr<APlayerController> PlayerController)
 {
+	if (UPFCampaignSubsystem::IsCampaign(GetWorld())) return;
 	APlayerController* Controller = PlayerController.Get();
-	if (!HasAuthority() || !Controller)
+	if (!Controller)
 	{
 		return;
 	}
@@ -391,16 +677,8 @@ void APFGameMode::RespawnPlayer(TWeakObjectPtr<APlayerController> PlayerControll
 	PlayerASC->SetLooseGameplayTagCount(PFGameplayTags::Character_State_Dead, 0, EGameplayTagReplicationState::TagOnly);
 	PlayerASC->SetLooseGameplayTagCount(PFGameplayTags::Character_State_Sprinting, 0, EGameplayTagReplicationState::TagOnly);
 
-	const float MissingHealth = PlayerAttributes->GetMaxHealth() - PlayerAttributes->GetHealth();
-	if (MissingHealth > 0.f)
-	{
-		FPFGE_StatGameplayEffects::ApplyHeal(PlayerASC, MissingHealth);
-	}
-	const float MissingMana = PlayerAttributes->GetMaxMana() - PlayerAttributes->GetMana();
-	if (MissingMana > 0.f)
-	{
-		FPFGE_StatGameplayEffects::ApplyManaRestore(PlayerASC, MissingMana);
-	}
+	FPFGE_StatGameplayEffects::ApplyHeal(PlayerASC, PlayerAttributes->GetMaxHealth() - PlayerAttributes->GetHealth());
+	FPFGE_StatGameplayEffects::ApplyManaRestore(PlayerASC, PlayerAttributes->GetMaxMana() - PlayerAttributes->GetMana());
 
 	// 새 플레이어 생성
 	if (bHasSpawnTransform)
@@ -416,35 +694,30 @@ void APFGameMode::RespawnPlayer(TWeakObjectPtr<APlayerController> PlayerControll
 }
 
 // 선택 캐릭터 교체, 상태 복원
-void APFGameMode::ChangeCharacter(AController* Controller)
+void APFGameMode::ChangeCharacter(APFPlayerController* Controller)
 {
-	if (!Controller)
-	{
-		return;
-	}
-
+	if (!HasAuthority() || !IsValid(Controller) || !IsValid(Controller->GetPawn())) return;
 	APFPlayerState* PS = Controller->GetPlayerState<APFPlayerState>();
-	if (!PS)
+	if (!PS) return;
+	if (APFSessionGameState::IsStory(GetWorld()))
 	{
-		return;
+		int32 Players = 0;
+		int32 SameCharacterPlayers = 0;
+		for (auto It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+		{
+			const APFPlayerController* Player = Cast<APFPlayerController>(It->Get());
+			const APFPlayerState* State = Player ? Player->GetPlayerState<APFPlayerState>() : nullptr;
+			if (!State) continue;
+			++Players;
+			if (State->GetCharacter() == PS->GetCharacter()) ++SameCharacterPlayers;
+		}
+		if (Players >= 2 && SameCharacterPlayers <= 1) return;
 	}
-
 	// 이전 위치, 제어 상태 보관
-	FTransform RestartTransform;
-	bool bHasRestartTransform = false;
-	APFPlayerController* PFController = Cast<APFPlayerController>(Controller);
-	if (PFController)
-	{
-		PFController->CaptureCharacterState();
-	}
+	APawn* OldPawn = Controller->GetPawn();
+	const FTransform RestartTransform = OldPawn->GetActorTransform();
+	Controller->CaptureCharacterState();
 	const FRotator SavedControlRotation = Controller->GetControlRotation();
-
-	if (APawn* OldPawn = Controller->GetPawn())
-	{
-		RestartTransform = OldPawn->GetActorTransform();
-		bHasRestartTransform = true;
-
-	}
 
 	// 다음 캐릭터 선택
 	ECHARACTER CharacterType = PS->GetCharacter();
@@ -461,54 +734,21 @@ void APFGameMode::ChangeCharacter(AController* Controller)
 		break;
 	}
 
-	if (APawn* OldPawn = Controller->GetPawn())
-	{
-		OldPawn->Destroy();
-	}
+	OldPawn->Destroy();
 
 	// 선택 캐릭터 생성, 상태 복원
-	if (bHasRestartTransform)
-	{
-		RestartPlayerAtTransform(Controller, RestartTransform);
-	}
-	else
-	{
-		RestartPlayer(Controller);
-	}
-
-	if (PFController)
-	{
-		PFController->RestoreCharacterState();
-	}
+	RestartPlayerAtTransform(Controller, RestartTransform);
+	Controller->RestoreCharacterState();
 
 	// 서버, 클라이언트 시선 복원
 	Controller->SetControlRotation(SavedControlRotation);
-	if (APFPlayerController* PlayerController = Cast<APFPlayerController>(Controller))
-	{
-		PlayerController->ClientSetRotation(SavedControlRotation, false);
-	}
+	Controller->ClientSetRotation(SavedControlRotation, false);
 }
 
 UClass* APFGameMode::GetDefaultPawnClassForController_Implementation(AController* Controller)
 {
-	APFPlayerState* PS = IsValid(Controller) ? Controller->GetPlayerState<APFPlayerState>() : nullptr;
-	UClass* PawnClass = nullptr;
-
-	if (IsValid(PS))
-	{
-		// 선택 캐릭터의 Pawn 클래스 조회
-		switch (PS->GetCharacter())
-		{
-		case CHARACTER_TWINBLAST:
-			PawnClass = LoadClass<APawn>(nullptr, TEXT("/Game/GameData/Character/Twinblast.Twinblast_C"));
-			break;
-		case CHARACTER_KWANG:
-			PawnClass = LoadClass<APawn>(nullptr, TEXT("/Game/GameData/Character/Kwang.Kwang_C"));
-			break;
-		default:
-			break;
-		}
-	}
-
+	const APFPlayerState* State = IsValid(Controller) ? Controller->GetPlayerState<APFPlayerState>() : nullptr;
+	const FPFCharacterDefinition* Definition = State ? UPFGameInstanceSubsystem::GetCharacterDefinition(State->GetCharacter()) : nullptr;
+	UClass* PawnClass = Definition ? LoadClass<APawn>(nullptr, Definition->PawnPath) : nullptr;
 	return PawnClass ? PawnClass : Super::GetDefaultPawnClassForController_Implementation(Controller);
 }

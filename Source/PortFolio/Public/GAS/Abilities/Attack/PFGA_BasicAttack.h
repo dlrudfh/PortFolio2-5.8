@@ -34,14 +34,17 @@ protected:
 
 	UPFAnimInstance* GetAnimInstance(const APFCharacter* Character) const;
 
-	virtual void WaitForEvent(AActor* AvatarActor) PURE_VIRTUAL(UPFGA_BasicAttack::WaitForEvent);
+	virtual void WaitForEvent(AActor* AvatarActor);
 	virtual void ExecuteMontageGC(AActor* AvatarActor) PURE_VIRTUAL(UPFGA_BasicAttack::ExecuteMontageGC);
+	virtual UAnimMontage* GetAttackMontage(APFCharacter* Character) PURE_VIRTUAL(UPFGA_BasicAttack::GetAttackMontage, return nullptr;);
 	void PlayAttackMontage(AActor* AvatarActor);
 	virtual void HandleAttackInputPressed();
+	virtual bool PrepareNextCombo();
+	void TryContinueCombo();
 	virtual void HandleAttackInputReleased();
 	bool IsAttackInputHeld() const;
 	bool IsComboWindowOpen() const;
-	void SetComboWindowTag(bool bEnabled) const;
+	void SetComboWindowTag(bool bEnabled);
 
 	void FinishAbility(bool bWasCancelled);
 
@@ -52,6 +55,8 @@ private:
 	UFUNCTION()
 	void OnComboReset(FGameplayEventData Payload);
 	UFUNCTION()
+	void OnComboWindow(FGameplayEventData Payload);
+	UFUNCTION()
 	void OnCancellationTagAdded();
 	void OnAttackMontageEnded(UAnimMontage* Montage, bool bInterrupted, int32 MontageInstanceID);
 	void UnbindAttackMontageEnd();
@@ -59,6 +64,7 @@ private:
 protected:
 	// 공격 몽타주 Cue 태그
 	FGameplayTag MontageGCTag;
+	int32 AttackSequence = 0;
 
 private:
 	FGameplayTag AttackingStateTag;
@@ -72,4 +78,5 @@ private:
 	// 공격 몽타주 인스턴스 식별자
 	int32 ActiveAttackMontageInstanceID = INDEX_NONE;
 	bool bStartingAttackMontage = false;
+	bool bComboWindowOpen = false;
 };

@@ -4,6 +4,7 @@
 #include "UI/Inventory/PFCooldownOverlayWidget.h"
 #include "Props/PFItem.h"
 #include "System/Framework/PFPlayerState.h"
+#include "System/Framework/PFPlayerController.h"
 #include "Components/Border.h"
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
@@ -24,26 +25,13 @@ UTexture2D* UPFInventoryWidget::GetInventoryItemTexture(int32 ItemID)
 		return CachedTexture->Get();
 	}
 
-	const TCHAR* TexturePath = nullptr;
-	switch (ItemID)
+	const FPFItemDefinition* Definition = APFItem::GetDefinition(ItemID);
+	if (!Definition)
 	{
-	case etoi(APFItem::EITEM::ITEM_HPPOTION):
-		TexturePath = TEXT("/Game/GameData/Images/Items/Hp.Hp");
-		break;
-	case etoi(APFItem::EITEM::ITEM_MPPOTION):
-		TexturePath = TEXT("/Game/GameData/Images/Items/Mp.Mp");
-		break;
-	case etoi(APFItem::EITEM::ITEM_SHIELD):
-		TexturePath = TEXT("/Game/GameData/Images/Items/Shield.Shield");
-		break;
-	case etoi(APFItem::EITEM::ITEM_COIN):
-		TexturePath = TEXT("/Game/GameData/Images/Items/Coin.Coin");
-		break;
-	default:
 		return nullptr;
 	}
 
-	UTexture2D* Texture = LoadObject<UTexture2D>(nullptr, TexturePath);
+	UTexture2D* Texture = LoadObject<UTexture2D>(nullptr, Definition->IconPath);
 	if (Texture)
 	{
 		ItemIconCache.Add(ItemID, Texture);
@@ -72,34 +60,11 @@ void UPFInventoryWidget::NativeConstruct()
 	DragPreviewBorder = Cast<UBorder>(GetWidgetFromName(TEXT("InventoryDragPreview")));
 	DragPreviewImage = Cast<UImage>(GetWidgetFromName(TEXT("InventoryDragImage")));
 	DragPreviewCountText = Cast<UTextBlock>(GetWidgetFromName(TEXT("InventoryDragCount")));
+	checkf(RootCanvas && InventoryBorder && QuickSlotBorder && TitleBarBorder
+		&& DragPreviewBorder && DragPreviewImage && DragPreviewCountText, TEXT("Required inventory widgets are missing"));
 
-	InventorySlotBorders.SetNum(APFPlayerState::InventorySlotCount);
-	InventorySlotImages.SetNum(APFPlayerState::InventorySlotCount);
-	InventorySlotCountTexts.SetNum(APFPlayerState::InventorySlotCount);
-	InventoryCooldownOverlays.SetNum(APFPlayerState::InventorySlotCount);
-	InventoryCooldownTexts.SetNum(APFPlayerState::InventorySlotCount);
-	for (int32 SlotIndex = 0; SlotIndex < APFPlayerState::InventorySlotCount; ++SlotIndex)
-	{
-		InventorySlotBorders[SlotIndex] = Cast<UBorder>(GetWidgetFromName(*FString::Printf(TEXT("InventorySlot_%d"), SlotIndex)));
-		InventorySlotImages[SlotIndex] = Cast<UImage>(GetWidgetFromName(*FString::Printf(TEXT("InventorySlotImage_%d"), SlotIndex)));
-		InventorySlotCountTexts[SlotIndex] = Cast<UTextBlock>(GetWidgetFromName(*FString::Printf(TEXT("InventorySlotCount_%d"), SlotIndex)));
-		InventoryCooldownOverlays[SlotIndex] = Cast<UPFCooldownOverlayWidget>(GetWidgetFromName(*FString::Printf(TEXT("InventoryCooldownOverlay_%d"), SlotIndex)));
-		InventoryCooldownTexts[SlotIndex] = Cast<UTextBlock>(GetWidgetFromName(*FString::Printf(TEXT("InventoryCooldownText_%d"), SlotIndex)));
-	}
-
-	QuickSlotBorders.SetNum(APFPlayerState::QuickSlotCount);
-	QuickSlotImages.SetNum(APFPlayerState::QuickSlotCount);
-	QuickSlotCountTexts.SetNum(APFPlayerState::QuickSlotCount);
-	QuickSlotCooldownOverlays.SetNum(APFPlayerState::QuickSlotCount);
-	QuickSlotCooldownTexts.SetNum(APFPlayerState::QuickSlotCount);
-	for (int32 QuickSlotIndex = 0; QuickSlotIndex < APFPlayerState::QuickSlotCount; ++QuickSlotIndex)
-	{
-		QuickSlotBorders[QuickSlotIndex] = Cast<UBorder>(GetWidgetFromName(*FString::Printf(TEXT("QuickSlot_%d"), QuickSlotIndex)));
-		QuickSlotImages[QuickSlotIndex] = Cast<UImage>(GetWidgetFromName(*FString::Printf(TEXT("QuickSlotImage_%d"), QuickSlotIndex)));
-		QuickSlotCountTexts[QuickSlotIndex] = Cast<UTextBlock>(GetWidgetFromName(*FString::Printf(TEXT("QuickSlotCount_%d"), QuickSlotIndex)));
-		QuickSlotCooldownOverlays[QuickSlotIndex] = Cast<UPFCooldownOverlayWidget>(GetWidgetFromName(*FString::Printf(TEXT("QuickCooldownOverlay_%d"), QuickSlotIndex)));
-		QuickSlotCooldownTexts[QuickSlotIndex] = Cast<UTextBlock>(GetWidgetFromName(*FString::Printf(TEXT("QuickCooldownText_%d"), QuickSlotIndex)));
-	}
+	BindSlotWidgets(InventorySlotWidgets, APFPlayerState::InventorySlotCount, TEXT("Inventory"));
+	BindSlotWidgets(QuickSlotWidgets, APFPlayerState::QuickSlotCount, TEXT("Quick"));
 
 	SetInventoryWindowVisible(false);
 	BindPlayerState(GetOwningPlayer() ? GetOwningPlayer()->GetPlayerState<APFPlayerState>() : nullptr);
@@ -108,17 +73,13 @@ void UPFInventoryWidget::NativeConstruct()
 void UPFInventoryWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 {
 	Super::NativeTick(MyGeometry, InDeltaTime);
-	UpdateInventoryCooldowns();
-	UpdateQuickSlotCooldowns();
-	if (QuickSlotBorder)
+	UpdateSlotCooldowns();
+	const FVector2D ViewSize = MyGeometry.GetLocalSize();
+	const FVector2D SlotSize = QuickSlotBorder->GetDesiredSize();
+	if (ViewSize.X > 0.0 && ViewSize.Y > 0.0 && SlotSize.X > 0.0 && SlotSize.Y > 0.0)
 	{
-		const FVector2D ViewSize = MyGeometry.GetLocalSize();
-		const FVector2D SlotSize = QuickSlotBorder->GetDesiredSize();
-		if (ViewSize.X > 0.0 && ViewSize.Y > 0.0 && SlotSize.X > 0.0 && SlotSize.Y > 0.0)
-		{
-			const double Scale = FMath::Clamp(FMath::Min((ViewSize.X - 56.0) / SlotSize.X, (ViewSize.Y * .3) / SlotSize.Y), .25, 1.0);
-			QuickSlotBorder->SetRenderScale(FVector2D(Scale));
-		}
+		const double Scale = FMath::Clamp(FMath::Min((ViewSize.X - 56.0) / SlotSize.X, (ViewSize.Y * .3) / SlotSize.Y), .25, 1.0);
+		QuickSlotBorder->SetRenderScale(FVector2D(Scale));
 	}
 }
 
@@ -149,8 +110,9 @@ void UPFInventoryWidget::BindPlayerState(APFPlayerState* NewPlayerState)
 // 인벤토리, 퀵슬롯 표시 갱신
 void UPFInventoryWidget::RefreshInventory()
 {
-	UpdateInventorySlotAppearance();
-	UpdateQuickSlotAppearance();
+	UpdateSlotAppearance(false);
+	UpdateSlotAppearance(true);
+	UpdateSlotCooldowns();
 }
 
 // 인벤토리 창 표시 전환
@@ -159,11 +121,6 @@ void UPFInventoryWidget::SetInventoryWindowVisible(bool bVisible)
 	if (!bVisible)
 	{
 		CancelDrag();
-	}
-
-	if (!InventoryBorder)
-	{
-		return;
 	}
 
 	InventoryBorder->SetVisibility(bVisible ? ESlateVisibility::Visible : ESlateVisibility::Hidden);
@@ -176,17 +133,12 @@ void UPFInventoryWidget::SetInventoryWindowVisible(bool bVisible)
 // 인벤토리 창 표시 여부 조회
 bool UPFInventoryWidget::IsInventoryWindowVisible() const
 {
-	return InventoryBorder && InventoryBorder->GetVisibility() == ESlateVisibility::Visible;
+	return InventoryBorder->GetVisibility() == ESlateVisibility::Visible;
 }
 
 // 드래그한 창 위치를 화면 안으로 제한
 void UPFInventoryWidget::UpdateInventoryWindowPosition(const FVector2D& ScreenSpacePosition)
 {
-	if (!RootCanvas || !InventoryBorder)
-	{
-		return;
-	}
-
 	if (UCanvasPanelSlot* WindowSlot = Cast<UCanvasPanelSlot>(InventoryBorder->Slot))
 	{
 		const FVector2D DesiredAbsolutePosition = ScreenSpacePosition - InventoryDragOffset;
@@ -204,199 +156,112 @@ void UPFInventoryWidget::UpdateInventoryWindowPosition(const FVector2D& ScreenSp
 // 드래그 아이콘 위치 갱신
 void UPFInventoryWidget::UpdateDragPreviewPosition(const FVector2D& ScreenSpacePosition)
 {
-	if (!RootCanvas)
-	{
-		return;
-	}
-
 	if (UCanvasPanelSlot* DragSlot = DragPreviewBorder ? Cast<UCanvasPanelSlot>(DragPreviewBorder->Slot) : nullptr)
 	{
 		DragSlot->SetPosition(RootCanvas->GetCachedGeometry().AbsoluteToLocal(ScreenSpacePosition));
 	}
 }
 
-// 마우스 위치의 인벤토리 슬롯 탐색
-int32 UPFInventoryWidget::FindInventorySlotIndexAtScreenPosition(const FVector2D& ScreenSpacePosition) const
+// 슬롯 이름으로 표시 요소 연결
+void UPFInventoryWidget::BindSlotWidgets(TArray<FPFInventorySlotWidgets>& Slots, int32 Count, const TCHAR* Prefix)
 {
-	for (int32 SlotIndex = 0; SlotIndex < InventorySlotBorders.Num(); ++SlotIndex)
+	Slots.SetNum(Count);
+	for (int32 Index = 0; Index < Count; ++Index)
 	{
-		if (InventorySlotBorders[SlotIndex] && InventorySlotBorders[SlotIndex]->GetCachedGeometry().IsUnderLocation(ScreenSpacePosition))
-		{
-			return SlotIndex;
-		}
+		FPFInventorySlotWidgets& Widgets = Slots[Index];
+		Widgets.DisplayedCooldownSeconds = INDEX_NONE;
+		Widgets.Border = Cast<UBorder>(GetWidgetFromName(*FString::Printf(TEXT("%sSlot_%d"), Prefix, Index)));
+		Widgets.Image = Cast<UImage>(GetWidgetFromName(*FString::Printf(TEXT("%sSlotImage_%d"), Prefix, Index)));
+		Widgets.CountText = Cast<UTextBlock>(GetWidgetFromName(*FString::Printf(TEXT("%sSlotCount_%d"), Prefix, Index)));
+		Widgets.CooldownOverlay = Cast<UPFCooldownOverlayWidget>(GetWidgetFromName(*FString::Printf(TEXT("%sCooldownOverlay_%d"), Prefix, Index)));
+		Widgets.CooldownText = Cast<UTextBlock>(GetWidgetFromName(*FString::Printf(TEXT("%sCooldownText_%d"), Prefix, Index)));
+		checkf(Widgets.Border && Widgets.Image && Widgets.CountText && Widgets.CooldownOverlay && Widgets.CooldownText, TEXT("Required inventory slot widgets are missing"));
 	}
-
-	return INDEX_NONE;
 }
 
-// 마우스 위치의 퀵슬롯 탐색
-int32 UPFInventoryWidget::FindQuickSlotIndexAtScreenPosition(const FVector2D& ScreenSpacePosition) const
+// 마우스 위치의 슬롯 탐색
+int32 UPFInventoryWidget::FindSlotIndexAtScreenPosition(const TArray<FPFInventorySlotWidgets>& Slots, const FVector2D& ScreenSpacePosition) const
 {
-	for (int32 QuickSlotIndex = 0; QuickSlotIndex < QuickSlotBorders.Num(); ++QuickSlotIndex)
+	return Slots.IndexOfByPredicate([&ScreenSpacePosition](const FPFInventorySlotWidgets& Widgets)
 	{
-		if (QuickSlotBorders[QuickSlotIndex] && QuickSlotBorders[QuickSlotIndex]->GetCachedGeometry().IsUnderLocation(ScreenSpacePosition))
-		{
-			return QuickSlotIndex;
-		}
-	}
-
-	return INDEX_NONE;
+		return Widgets.Border->GetCachedGeometry().IsUnderLocation(ScreenSpacePosition);
+	});
 }
 
-// 인벤토리 아이콘, 수량 갱신
-void UPFInventoryWidget::UpdateInventorySlotAppearance()
+// 슬롯의 아이템, 수량 조회
+FPFInventorySlot UPFInventoryWidget::GetDisplayedSlot(int32 SlotIndex, bool bQuickSlots) const
 {
-	const TArray<FPFInventorySlot>* InventorySlots = CurrentPlayerState.IsValid() ? &CurrentPlayerState->GetInventorySlots() : nullptr;
+	const APFPlayerState* PlayerState = CurrentPlayerState.Get();
+	if (!PlayerState) return FPFInventorySlot();
+	if (!bQuickSlots) return PlayerState->GetInventorySlots()[SlotIndex];
 
-	for (int32 SlotIndex = 0; SlotIndex < InventorySlotBorders.Num(); ++SlotIndex)
+	const int32 ItemID = PlayerState->GetQuickSlotItemIDs()[SlotIndex];
+	return FPFInventorySlot(ItemID, PlayerState->GetInventoryItemCount(ItemID));
+}
+
+// 슬롯 아이콘, 수량 갱신
+void UPFInventoryWidget::UpdateSlotAppearance(bool bQuickSlots)
+{
+	const TArray<FPFInventorySlotWidgets>& Slots = bQuickSlots ? QuickSlotWidgets : InventorySlotWidgets;
+	for (int32 Index = 0; Index < Slots.Num(); ++Index)
 	{
-		if (!InventorySlotBorders[SlotIndex]
-			|| !InventorySlotImages.IsValidIndex(SlotIndex) || !InventorySlotImages[SlotIndex]
-			|| !InventorySlotCountTexts.IsValidIndex(SlotIndex) || !InventorySlotCountTexts[SlotIndex]
-			|| !InventoryCooldownOverlays.IsValidIndex(SlotIndex) || !InventoryCooldownOverlays[SlotIndex]
-			|| !InventoryCooldownTexts.IsValidIndex(SlotIndex) || !InventoryCooldownTexts[SlotIndex])
-		{
-			continue;
-		}
-
-		const bool bHasItem = InventorySlots && InventorySlots->IsValidIndex(SlotIndex) && !(*InventorySlots)[SlotIndex].IsEmpty();
-		const bool bIsDraggedSlot = bIsDraggingItem && DragSourceSlotIndex == SlotIndex;
+		const FPFInventorySlotWidgets& Widgets = Slots[Index];
+		const FPFInventorySlot Item = GetDisplayedSlot(Index, bQuickSlots);
+		const bool bHasItem = bQuickSlots ? Item.ItemID != RETURN_ERROR : !Item.IsEmpty();
+		const bool bIsDraggedSlot = !bQuickSlots && bIsDraggingItem && DragSourceSlotIndex == Index;
 
 		if (!bHasItem)
 		{
-			InventorySlotImages[SlotIndex]->SetBrushFromTexture(nullptr, true);
-			InventorySlotImages[SlotIndex]->SetVisibility(ESlateVisibility::Hidden);
-			InventorySlotCountTexts[SlotIndex]->SetText(FText::GetEmpty());
-			InventoryCooldownOverlays[SlotIndex]->SetVisibility(ESlateVisibility::Hidden);
-			InventoryCooldownTexts[SlotIndex]->SetVisibility(ESlateVisibility::Hidden);
-			InventoryCooldownTexts[SlotIndex]->SetText(FText::GetEmpty());
+			Widgets.Image->SetBrushFromTexture(nullptr, true);
+			Widgets.Image->SetVisibility(ESlateVisibility::Hidden);
+			Widgets.CountText->SetText(FText::GetEmpty());
+			Widgets.CooldownOverlay->SetVisibility(ESlateVisibility::Hidden);
+			Widgets.CooldownText->SetVisibility(ESlateVisibility::Hidden);
 			continue;
 		}
 
-		const int32 ItemID = (*InventorySlots)[SlotIndex].ItemID;
-		InventorySlotImages[SlotIndex]->SetBrushFromTexture(GetInventoryItemTexture(ItemID), true);
-		InventorySlotImages[SlotIndex]->SetVisibility(bIsDraggedSlot ? ESlateVisibility::Hidden : ESlateVisibility::HitTestInvisible);
-
-		if ((*InventorySlots)[SlotIndex].Count > 1)
-		{
-			InventorySlotCountTexts[SlotIndex]->SetText(FText::FromString(FString::Printf(TEXT("x%d"), (*InventorySlots)[SlotIndex].Count)));
-		}
-		else
-		{
-			InventorySlotCountTexts[SlotIndex]->SetText(FText::GetEmpty());
-		}
-
-		InventorySlotCountTexts[SlotIndex]->SetVisibility(bIsDraggedSlot ? ESlateVisibility::Hidden : ESlateVisibility::HitTestInvisible);
-	}
-	UpdateInventoryCooldowns();
-}
-
-// 퀵슬롯 아이콘, 수량 갱신
-void UPFInventoryWidget::UpdateQuickSlotAppearance()
-{
-	const TArray<int32>* QuickSlotItemIDs = CurrentPlayerState.IsValid() ? &CurrentPlayerState->GetQuickSlotItemIDs() : nullptr;
-
-	for (int32 QuickSlotIndex = 0; QuickSlotIndex < QuickSlotBorders.Num(); ++QuickSlotIndex)
-	{
-		if (!QuickSlotBorders[QuickSlotIndex]
-			|| !QuickSlotImages.IsValidIndex(QuickSlotIndex) || !QuickSlotImages[QuickSlotIndex]
-			|| !QuickSlotCountTexts.IsValidIndex(QuickSlotIndex) || !QuickSlotCountTexts[QuickSlotIndex]
-			|| !QuickSlotCooldownOverlays.IsValidIndex(QuickSlotIndex) || !QuickSlotCooldownOverlays[QuickSlotIndex]
-			|| !QuickSlotCooldownTexts.IsValidIndex(QuickSlotIndex) || !QuickSlotCooldownTexts[QuickSlotIndex])
-		{
-			continue;
-		}
-
-		const int32 QuickSlotItemID = QuickSlotItemIDs && QuickSlotItemIDs->IsValidIndex(QuickSlotIndex) ? (*QuickSlotItemIDs)[QuickSlotIndex] : RETURN_ERROR;
-		if (QuickSlotItemID == RETURN_ERROR)
-		{
-			QuickSlotImages[QuickSlotIndex]->SetBrushFromTexture(nullptr, true);
-			QuickSlotImages[QuickSlotIndex]->SetVisibility(ESlateVisibility::Hidden);
-			QuickSlotCountTexts[QuickSlotIndex]->SetText(FText::GetEmpty());
-			QuickSlotCooldownOverlays[QuickSlotIndex]->SetVisibility(ESlateVisibility::Hidden);
-			QuickSlotCooldownTexts[QuickSlotIndex]->SetVisibility(ESlateVisibility::Hidden);
-			QuickSlotCooldownTexts[QuickSlotIndex]->SetText(FText::GetEmpty());
-			continue;
-		}
-
-		const int32 ItemCount = CurrentPlayerState->GetInventoryItemCount(QuickSlotItemID);
-		QuickSlotImages[QuickSlotIndex]->SetBrushFromTexture(GetInventoryItemTexture(QuickSlotItemID), true);
-		QuickSlotImages[QuickSlotIndex]->SetVisibility(ESlateVisibility::HitTestInvisible);
-		QuickSlotCountTexts[QuickSlotIndex]->SetText(ItemCount > 1 ? FText::FromString(FString::Printf(TEXT("x%d"), ItemCount)) : FText::GetEmpty());
-	}
-	UpdateQuickSlotCooldowns();
-}
-
-// 인벤토리 쿨타임 표시 갱신
-void UPFInventoryWidget::UpdateInventoryCooldowns()
-{
-	if (!IsInventoryWindowVisible())
-	{
-		return;
-	}
-
-	const TArray<FPFInventorySlot>* InventorySlots = CurrentPlayerState.IsValid() ? &CurrentPlayerState->GetInventorySlots() : nullptr;
-	for (int32 SlotIndex = 0; SlotIndex < InventoryCooldownOverlays.Num(); ++SlotIndex)
-	{
-		if (!InventoryCooldownOverlays[SlotIndex]
-			|| !InventoryCooldownTexts.IsValidIndex(SlotIndex) || !InventoryCooldownTexts[SlotIndex])
-		{
-			continue;
-		}
-
-		const bool bHasItem = InventorySlots && InventorySlots->IsValidIndex(SlotIndex) && !(*InventorySlots)[SlotIndex].IsEmpty();
-		const bool bIsDraggedSlot = bIsDraggingItem && DragSourceSlotIndex == SlotIndex;
-		const float CooldownRemaining = bHasItem && !bIsDraggedSlot
-			? CurrentPlayerState->GetItemCooldownRemaining((*InventorySlots)[SlotIndex].ItemID) : 0.f;
-		if (CooldownRemaining > 0.f)
-		{
-			InventoryCooldownOverlays[SlotIndex]->SetCooldownProgress(CooldownRemaining / APFPlayerState::ItemCooldownDuration);
-			InventoryCooldownOverlays[SlotIndex]->SetVisibility(ESlateVisibility::HitTestInvisible);
-			InventoryCooldownTexts[SlotIndex]->SetText(FText::AsNumber(FMath::CeilToInt(CooldownRemaining)));
-			InventoryCooldownTexts[SlotIndex]->SetVisibility(ESlateVisibility::HitTestInvisible);
-		}
-		else
-		{
-			InventoryCooldownOverlays[SlotIndex]->SetVisibility(ESlateVisibility::Hidden);
-			InventoryCooldownTexts[SlotIndex]->SetVisibility(ESlateVisibility::Hidden);
-			InventoryCooldownTexts[SlotIndex]->SetText(FText::GetEmpty());
-		}
+		Widgets.Image->SetBrushFromTexture(GetInventoryItemTexture(Item.ItemID), true);
+		Widgets.Image->SetVisibility(bIsDraggedSlot ? ESlateVisibility::Hidden : ESlateVisibility::HitTestInvisible);
+		Widgets.CountText->SetText(Item.Count > 1 ? FText::FromString(FString::Printf(TEXT("x%d"), Item.Count)) : FText::GetEmpty());
+		if (!bQuickSlots) Widgets.CountText->SetVisibility(bIsDraggedSlot ? ESlateVisibility::Hidden : ESlateVisibility::HitTestInvisible);
 	}
 }
 
-// 퀵슬롯 쿨타임 표시 갱신
-void UPFInventoryWidget::UpdateQuickSlotCooldowns()
+// 표시 중인 슬롯의 쿨타임 갱신
+void UPFInventoryWidget::UpdateSlotCooldowns()
 {
-	if (!QuickSlotBorder || !QuickSlotBorder->IsVisible())
+	const APFPlayerState* State = CurrentPlayerState.Get();
+	TMap<int32, float, TInlineSetAllocator<4>> RemainingByItem;
+	for (bool bQuickSlots : { false, true })
 	{
-		return;
-	}
-
-	const TArray<int32>* QuickSlotItemIDs = CurrentPlayerState.IsValid() ? &CurrentPlayerState->GetQuickSlotItemIDs() : nullptr;
-	for (int32 QuickSlotIndex = 0; QuickSlotIndex < QuickSlotCooldownOverlays.Num(); ++QuickSlotIndex)
-	{
-		if (!QuickSlotCooldownOverlays[QuickSlotIndex]
-			|| !QuickSlotCooldownTexts.IsValidIndex(QuickSlotIndex) || !QuickSlotCooldownTexts[QuickSlotIndex])
+		if (!bQuickSlots && !IsInventoryWindowVisible()) continue;
+		TArray<FPFInventorySlotWidgets>& Slots = bQuickSlots ? QuickSlotWidgets : InventorySlotWidgets;
+		for (int32 Index = 0; Index < Slots.Num(); ++Index)
 		{
-			continue;
-		}
-
-		const int32 QuickSlotItemID = QuickSlotItemIDs && QuickSlotItemIDs->IsValidIndex(QuickSlotIndex)
-			? (*QuickSlotItemIDs)[QuickSlotIndex] : RETURN_ERROR;
-		const float CooldownRemaining = QuickSlotItemID != RETURN_ERROR
-			? CurrentPlayerState->GetItemCooldownRemaining(QuickSlotItemID) : 0.f;
-		if (CooldownRemaining > 0.f)
-		{
-			QuickSlotCooldownOverlays[QuickSlotIndex]->SetCooldownProgress(CooldownRemaining / APFPlayerState::ItemCooldownDuration);
-			QuickSlotCooldownOverlays[QuickSlotIndex]->SetVisibility(ESlateVisibility::HitTestInvisible);
-			QuickSlotCooldownTexts[QuickSlotIndex]->SetText(FText::AsNumber(FMath::CeilToInt(CooldownRemaining)));
-			QuickSlotCooldownTexts[QuickSlotIndex]->SetVisibility(ESlateVisibility::HitTestInvisible);
-		}
-		else
-		{
-			QuickSlotCooldownOverlays[QuickSlotIndex]->SetVisibility(ESlateVisibility::Hidden);
-			QuickSlotCooldownTexts[QuickSlotIndex]->SetVisibility(ESlateVisibility::Hidden);
-			QuickSlotCooldownTexts[QuickSlotIndex]->SetText(FText::GetEmpty());
+			FPFInventorySlotWidgets& Widgets = Slots[Index];
+			int32 ItemID = RETURN_ERROR;
+			if (State && bQuickSlots && State->GetQuickSlotItemIDs().IsValidIndex(Index)) ItemID = State->GetQuickSlotItemIDs()[Index];
+			else if (State && !bQuickSlots && State->GetInventorySlots().IsValidIndex(Index))
+			{
+				const FPFInventorySlot& Item = State->GetInventorySlots()[Index];
+				if (!Item.IsEmpty() && !(bIsDraggingItem && DragSourceSlotIndex == Index)) ItemID = Item.ItemID;
+			}
+			float Remaining = 0.f;
+			if (ItemID != RETURN_ERROR)
+			{
+				float* Cached = RemainingByItem.Find(ItemID);
+				if (!Cached) Cached = &RemainingByItem.Add(ItemID, State->GetItemCooldownRemaining(ItemID));
+				Remaining = *Cached;
+			}
+			Widgets.CooldownOverlay->SetCooldownProgress(Remaining / APFPlayerState::ItemCooldownDuration);
+			Widgets.CooldownOverlay->SetVisibility(Remaining > 0.f ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Hidden);
+			Widgets.CooldownText->SetVisibility(Remaining > 0.f ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Hidden);
+			const int32 Seconds = FMath::CeilToInt(Remaining);
+			if (Widgets.DisplayedCooldownSeconds != Seconds)
+			{
+				Widgets.DisplayedCooldownSeconds = Seconds;
+				Widgets.CooldownText->SetText(Seconds > 0 ? FText::AsNumber(Seconds) : FText::GetEmpty());
+			}
 		}
 	}
 }
@@ -404,11 +269,6 @@ void UPFInventoryWidget::UpdateQuickSlotCooldowns()
 // 드래그할 아이템 아이콘, 수량 표시
 void UPFInventoryWidget::RebuildDragPreview(int32 ItemID, int32 ItemCount)
 {
-	if (!DragPreviewBorder || !DragPreviewImage || !DragPreviewCountText)
-	{
-		return;
-	}
-
 	DragPreviewImage->SetBrushFromTexture(GetInventoryItemTexture(ItemID), true);
 
 	if (ItemCount > 1)
@@ -426,20 +286,9 @@ void UPFInventoryWidget::RebuildDragPreview(int32 ItemID, int32 ItemCount)
 // 드래그 표시 초기화
 void UPFInventoryWidget::ClearDragPreview()
 {
-	if (DragPreviewImage)
-	{
-		DragPreviewImage->SetBrushFromTexture(nullptr, true);
-	}
-
-	if (DragPreviewCountText)
-	{
-		DragPreviewCountText->SetText(FText::GetEmpty());
-	}
-
-	if (DragPreviewBorder)
-	{
-		DragPreviewBorder->SetVisibility(ESlateVisibility::Hidden);
-	}
+	DragPreviewImage->SetBrushFromTexture(nullptr, true);
+	DragPreviewCountText->SetText(FText::GetEmpty());
+	DragPreviewBorder->SetVisibility(ESlateVisibility::Hidden);
 }
 
 // 드래그 취소, 마우스 캡처 해제
@@ -450,7 +299,8 @@ void UPFInventoryWidget::CancelDrag()
 	bIsDraggingItem = false;
 	DragSourceSlotIndex = INDEX_NONE;
 	ClearDragPreview();
-	UpdateInventorySlotAppearance();
+	UpdateSlotAppearance(false);
+	UpdateSlotCooldowns();
 
 	// 이 위젯이 가진 마우스 캡처 해제
 	if (bWasDragging && FSlateApplication::IsInitialized())
@@ -496,6 +346,12 @@ void UPFInventoryWidget::NativeOnMouseCaptureLost(const FCaptureLostEvent& Captu
 // 창, 아이템 드래그 시작
 FReply UPFInventoryWidget::HandleInventoryMouseButtonDown(const FPointerEvent& InMouseEvent)
 {
+	const APFPlayerController* Player = Cast<APFPlayerController>(GetOwningPlayer());
+	if (!Player || !Player->CanUseUIInput())
+	{
+		CancelDrag();
+		return FReply::Handled();
+	}
 	if (InMouseEvent.GetEffectingButton() != EKeys::LeftMouseButton)
 	{
 		return FReply::Unhandled();
@@ -504,7 +360,7 @@ FReply UPFInventoryWidget::HandleInventoryMouseButtonDown(const FPointerEvent& I
 	const FVector2D ScreenSpacePosition = InMouseEvent.GetScreenSpacePosition();
 
 	// 제목 표시줄에서 창 드래그 시작
-	if (IsInventoryWindowVisible() && TitleBarBorder && TitleBarBorder->GetCachedGeometry().IsUnderLocation(ScreenSpacePosition))
+	if (IsInventoryWindowVisible() && TitleBarBorder->GetCachedGeometry().IsUnderLocation(ScreenSpacePosition))
 	{
 		bIsDraggingInventory = true;
 		InventoryDragOffset = ScreenSpacePosition - InventoryBorder->GetCachedGeometry().GetAbsolutePosition();
@@ -516,7 +372,7 @@ FReply UPFInventoryWidget::HandleInventoryMouseButtonDown(const FPointerEvent& I
 		return FReply::Unhandled();
 	}
 
-	const int32 SlotIndex = FindInventorySlotIndexAtScreenPosition(ScreenSpacePosition);
+	const int32 SlotIndex = FindSlotIndexAtScreenPosition(InventorySlotWidgets, ScreenSpacePosition);
 	const TArray<FPFInventorySlot>& InventorySlots = CurrentPlayerState->GetInventorySlots();
 	if (!InventorySlots.IsValidIndex(SlotIndex) || InventorySlots[SlotIndex].IsEmpty())
 	{
@@ -528,7 +384,8 @@ FReply UPFInventoryWidget::HandleInventoryMouseButtonDown(const FPointerEvent& I
 	DragSourceSlotIndex = SlotIndex;
 	RebuildDragPreview(InventorySlots[SlotIndex].ItemID, InventorySlots[SlotIndex].Count);
 	UpdateDragPreviewPosition(ScreenSpacePosition);
-	UpdateInventorySlotAppearance();
+	UpdateSlotAppearance(false);
+	UpdateSlotCooldowns();
 	return FReply::Handled().CaptureMouse(TakeWidget());
 }
 
@@ -554,6 +411,12 @@ FReply UPFInventoryWidget::NativeOnMouseButtonDown(const FGeometry& InGeometry, 
 
 FReply UPFInventoryWidget::NativeOnMouseButtonUp(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
+	const APFPlayerController* Player = Cast<APFPlayerController>(GetOwningPlayer());
+	if (!Player || !Player->CanUseUIInput())
+	{
+		CancelDrag();
+		return FReply::Handled();
+	}
 	if (InMouseEvent.GetEffectingButton() != EKeys::LeftMouseButton)
 	{
 		return Super::NativeOnMouseButtonUp(InGeometry, InMouseEvent);
@@ -571,7 +434,7 @@ FReply UPFInventoryWidget::NativeOnMouseButtonUp(const FGeometry& InGeometry, co
 		if (CurrentPlayerState.IsValid())
 		{
 			const FVector2D DropScreenPosition = InMouseEvent.GetScreenSpacePosition();
-			const int32 QuickSlotIndex = FindQuickSlotIndexAtScreenPosition(DropScreenPosition);
+			const int32 QuickSlotIndex = FindSlotIndexAtScreenPosition(QuickSlotWidgets, DropScreenPosition);
 			const TArray<FPFInventorySlot>& InventorySlots = CurrentPlayerState->GetInventorySlots();
 
 			if (QuickSlotIndex != INDEX_NONE && InventorySlots.IsValidIndex(DragSourceSlotIndex) && !InventorySlots[DragSourceSlotIndex].IsEmpty())
@@ -580,7 +443,7 @@ FReply UPFInventoryWidget::NativeOnMouseButtonUp(const FGeometry& InGeometry, co
 			}
 			else
 			{
-				const int32 DropInventorySlotIndex = FindInventorySlotIndexAtScreenPosition(DropScreenPosition);
+				const int32 DropInventorySlotIndex = FindSlotIndexAtScreenPosition(InventorySlotWidgets, DropScreenPosition);
 				if (DropInventorySlotIndex != INDEX_NONE && DropInventorySlotIndex != DragSourceSlotIndex)
 				{
 					CurrentPlayerState->MoveInventorySlot(DragSourceSlotIndex, DropInventorySlotIndex);
@@ -598,6 +461,12 @@ FReply UPFInventoryWidget::NativeOnMouseButtonUp(const FGeometry& InGeometry, co
 
 FReply UPFInventoryWidget::NativeOnMouseMove(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
+	const APFPlayerController* Player = Cast<APFPlayerController>(GetOwningPlayer());
+	if (!Player || !Player->CanUseUIInput())
+	{
+		CancelDrag();
+		return FReply::Handled();
+	}
 	if (bIsDraggingInventory)
 	{
 		UpdateInventoryWindowPosition(InMouseEvent.GetScreenSpacePosition());
@@ -615,12 +484,18 @@ FReply UPFInventoryWidget::NativeOnMouseMove(const FGeometry& InGeometry, const 
 
 FReply UPFInventoryWidget::NativeOnMouseButtonDoubleClick(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
+	const APFPlayerController* Player = Cast<APFPlayerController>(GetOwningPlayer());
+	if (!Player || !Player->CanUseUIInput())
+	{
+		CancelDrag();
+		return FReply::Handled();
+	}
 	if (!IsInventoryWindowVisible() || InMouseEvent.GetEffectingButton() != EKeys::LeftMouseButton || !CurrentPlayerState.IsValid())
 	{
 		return Super::NativeOnMouseButtonDoubleClick(InGeometry, InMouseEvent);
 	}
 
-	const int32 SlotIndex = FindInventorySlotIndexAtScreenPosition(InMouseEvent.GetScreenSpacePosition());
+	const int32 SlotIndex = FindSlotIndexAtScreenPosition(InventorySlotWidgets, InMouseEvent.GetScreenSpacePosition());
 	const TArray<FPFInventorySlot>& InventorySlots = CurrentPlayerState->GetInventorySlots();
 
 	if (!InventorySlots.IsValidIndex(SlotIndex) || InventorySlots[SlotIndex].IsEmpty())

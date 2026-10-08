@@ -12,6 +12,12 @@ void UPFCharacterWidget::SetDisplayUsername(const FString& NewUsername)
 	}
 
 	DisplayUsername = NewUsername;
+	UpdateUsername();
+}
+
+// 이름, 표시 여부 반영
+void UPFCharacterWidget::UpdateUsername()
+{
 	if (UsernameText)
 	{
 		UsernameText->SetText(FText::FromString(DisplayUsername));
@@ -19,6 +25,19 @@ void UPFCharacterWidget::SetDisplayUsername(const FString& NewUsername)
 	if (UsernameBox)
 	{
 		UsernameBox->SetVisibility(DisplayUsername.IsEmpty() ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
+	}
+}
+
+// 자원 비율, 수치 표시
+void UPFCharacterWidget::UpdateResourceWidgets(UProgressBar* Progress, UTextBlock* Text, float Current, float Maximum)
+{
+	if (Progress)
+	{
+		Progress->SetPercent(Maximum > 0.f ? Current / Maximum : 0.f);
+	}
+	if (Text && IsLocalPlayer)
+	{
+		Text->SetText(FText::FromString(FString::Printf(TEXT("%d / %d"), static_cast<int32>(Current), static_cast<int32>(Maximum))));
 	}
 }
 
@@ -46,14 +65,7 @@ void UPFCharacterWidget::NativeConstruct()
 	// 다른 플레이어 이름 위젯 연결
 	UsernameBox = Cast<USizeBox>(GetWidgetFromName(TEXT("UsernameContainer")));
 	UsernameText = Cast<UTextBlock>(GetWidgetFromName(TEXT("TEXT_Username")));
-	if (UsernameText)
-	{
-		UsernameText->SetText(FText::FromString(DisplayUsername));
-	}
-	if (UsernameBox)
-	{
-		UsernameBox->SetVisibility(DisplayUsername.IsEmpty() ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
-	}
+	UpdateUsername();
 
 	// 체력바, 로컬 플레이어 수치 위젯 연결
 	HPProgressBar = Cast<UProgressBar>(GetWidgetFromName(TEXT("PB_HPBar")));
@@ -89,17 +101,7 @@ void UPFCharacterWidget::UpdateHPWidget()
 {
 	if (CurrentAttributeSet.IsValid())
 	{
-		const float CurHP = CurrentAttributeSet->GetHealth();
-		const float MaxHP = CurrentAttributeSet->GetMaxHealth();
-		if (HPProgressBar)
-		{
-			HPProgressBar->SetPercent(MaxHP > 0.f ? CurHP / MaxHP : 0.f);
-		}
-
-		if (HPTextBlock && IsLocalPlayer)
-		{
-			HPTextBlock->SetText(FText::FromString(FString::Printf(TEXT("%d / %d"), (int)CurHP, (int)MaxHP)));
-		}
+		UpdateResourceWidgets(HPProgressBar, HPTextBlock, CurrentAttributeSet->GetHealth(), CurrentAttributeSet->GetMaxHealth());
 	}
 }
 
@@ -108,16 +110,6 @@ void UPFCharacterWidget::UpdateMPWidget()
 {
 	if (CurrentAttributeSet.IsValid())
 	{
-		const float CurMP = CurrentAttributeSet->GetMana();
-		const float MaxMP = CurrentAttributeSet->GetMaxMana();
-		if (MPProgressBar)
-		{
-			MPProgressBar->SetPercent(MaxMP > 0.f ? CurMP / MaxMP : 0.f);
-		}
-
-		if (MPTextBlock && IsLocalPlayer)
-		{
-			MPTextBlock->SetText(FText::FromString(FString::Printf(TEXT("%d / %d"), (int)CurMP, (int)MaxMP)));
-		}
+		UpdateResourceWidgets(MPProgressBar, MPTextBlock, CurrentAttributeSet->GetMana(), CurrentAttributeSet->GetMaxMana());
 	}
 }

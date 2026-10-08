@@ -130,10 +130,10 @@ bool PFNavigationTraversal::HasClearance(UWorld& World, const FVector& Feet, con
 
 // 실제 캡슐의 점프 궤적 검증
 bool PFNavigationTraversal::ValidateJump(UWorld& World, const FVector& Start, const FVector& End,
-	const FPFTraversalSettings& Settings, FPFTraversalSolution& OutSolution)
+	const FPFTraversalSettings& Settings, FPFTraversalSolution& OutSolution, bool bCheckEndpointClearance)
 {
 	if (!Solve(Start, End, Settings, Settings.JumpSpeed, OutSolution)
-		|| !HasClearance(World, Start, Settings) || !HasClearance(World, End, Settings))
+		|| (bCheckEndpointClearance && (!HasClearance(World, Start, Settings) || !HasClearance(World, End, Settings))))
 	{
 		return false;
 	}
@@ -174,11 +174,11 @@ FVector PFNavigationTraversal::GetDropVelocity(const FVector& Feet, const FVecto
 
 // NavMesh 출발점 기준 낙하 거리, 캡슐 이동 검증
 bool PFNavigationTraversal::ValidateDrop(UWorld& World, const FVector& Start, const FVector& End,
-	const FPFTraversalSettings& Settings, float& OutDuration)
+	const FPFTraversalSettings& Settings, float& OutDuration, bool bCheckEndpointClearance)
 {
 	OutDuration = 0.f;
-	if (!Settings.bCanWalkOffLedges || End.Z > Start.Z + UE_KINDA_SMALL_NUMBER || !HasClearance(World, Start, Settings)
-		|| !HasClearance(World, End, Settings))
+	if (!Settings.bCanWalkOffLedges || End.Z > Start.Z + UE_KINDA_SMALL_NUMBER
+		|| (bCheckEndpointClearance && (!HasClearance(World, Start, Settings) || !HasClearance(World, End, Settings))))
 	{
 		return false;
 	}

@@ -18,6 +18,9 @@ public:
 
 	void SetMesh(ECHARACTER Type);
 	void SetTitle(class UPFTitle* TempTitle) { Title = TempTitle; }
+	ECHARACTER GetDummyType() const { return DummyType; }
+	void SetLobbyPresentation(bool bSelected, bool bCanInteract);
+	void PlaySelection();
 
 	virtual void PostInitializeComponents() override;
 
@@ -31,6 +34,9 @@ protected:
 
 private:
 	ECHARACTER DummyType;
+	bool bLobbySelected = false;
+	bool bInteractive = false;
+	bool bHovered = false;
 
 	// 선택 애니메이션 인스턴스
 	UPROPERTY()

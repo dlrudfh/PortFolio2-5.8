@@ -12,4 +12,11 @@ class PORTFOLIO_API UPFEnvironmentInstancesComponent : public UHierarchicalInsta
 
 public:
 	virtual void GetNavigationData(FNavigationRelevantData& Data) const override;
+
+#if WITH_EDITOR
+	virtual void PostStaticMeshCompilation() override;
+
+protected:
+	virtual void BeginPlay() override;
+#endif
 };

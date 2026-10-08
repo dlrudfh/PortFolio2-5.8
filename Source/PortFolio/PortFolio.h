@@ -22,27 +22,18 @@ namespace PFCollisionChannelNames
 	inline const FName AStarTrace(TEXT("AStarTrace"));
 }
 
-inline bool GetCollisionChannel(const FName ChannelName, ECollisionChannel& OutCollisionChannel)
+inline ECollisionChannel GetCollisionChannel(const FName ChannelName)
 {
-	OutCollisionChannel = ECC_MAX;
 	const UCollisionProfile* CollisionProfile = UCollisionProfile::Get();
-	if (!CollisionProfile)
-	{
-		PFLOG(Error, TEXT("Collision Failed : %s"), *ChannelName.ToString());
-		return false;
-	}
-
 	for (int32 ChannelIndex = 0; ChannelIndex < static_cast<int32>(ECC_MAX); ++ChannelIndex)
 	{
 		if (CollisionProfile->ReturnChannelNameFromContainerIndex(ChannelIndex) == ChannelName)
 		{
-			OutCollisionChannel = static_cast<ECollisionChannel>(ChannelIndex);
-			return true;
+			return static_cast<ECollisionChannel>(ChannelIndex);
 		}
 	}
-
-	PFLOG(Error, TEXT("Collision Failed : %s"), *ChannelName.ToString());
-	return false;
+	PFLOG(Fatal, TEXT("Required collision channel is missing: %s"), *ChannelName.ToString());
+	return ECC_MAX;
 }
 
 const int RETURN_ERROR = INT_MAX;
@@ -102,13 +93,6 @@ using enum ECONTROLMODE;
 
 inline constexpr ECONTROLMODE DefaultControlMode = TPS;
 
-// 화면 비율 계산 기준
-static int32 CURRENTSCREENX = 1920;
-static int32 CURRENTSCREENY = 1080;
-static const int32 DEFAULTSCREENX = 1920;
-static const int32 DEFAULTSCREENY = 1080;
-
-#define SCREENRATIO FVector2D((float)CURRENTSCREENX / DEFAULTSCREENX, (float)CURRENTSCREENY / DEFAULTSCREENY)
 
 UENUM()
 enum class ENIAGARAID

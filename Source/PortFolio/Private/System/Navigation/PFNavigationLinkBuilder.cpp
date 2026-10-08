@@ -140,12 +140,14 @@ namespace
 			return FVector::DistSquared2D(A.Start, A.End) < FVector::DistSquared2D(B.Start, B.End);
 		});
 		TArray<FGeneratedLink> Kept;
+		Kept.Reserve(Links.Num());
 		TMap<FIntPoint, TArray<int32>> ByStart;
 		TMap<FIntPoint, TArray<int32>> ByEnd;
 		const double MergeDistanceSquared = FMath::Square(MergeDistance);
+		TSet<int32> CheckedLinks;
 		for (const FGeneratedLink& Link : Links)
 		{
-			TSet<int32> CheckedLinks;
+			CheckedLinks.Reset();
 			auto HasDuplicateNearby = [&](const FVector& Point, const TMap<FIntPoint, TArray<int32>>& ByPoint)
 			{
 				const FIntPoint Min = Bucket(Point - FVector(MergeDistance, MergeDistance, 0));
@@ -322,9 +324,11 @@ bool PFNavigationLinkBuilder::Build(UWorld& World, ARecastNavMesh& NavMesh, cons
 	TArray<FNavTileRef> Tiles;
 	const uint8 WalkableNoJumpArea = NavMesh.GetAreaID(UPFNavArea_WalkableNoJump::StaticClass());
 	NavMesh.GetAllNavMeshTiles(Tiles);
+	TArray<FNavPoly> Polys;
+	TArray<FNavigationPortalEdge> Walls;
 	for (FNavTileRef Tile : Tiles)
 	{
-		TArray<FNavPoly> Polys;
+		Polys.Reset();
 		NavMesh.GetPolysInTile(Tile, Polys);
 		for (const FNavPoly& Poly : Polys)
 		{
@@ -357,7 +361,7 @@ bool PFNavigationLinkBuilder::Build(UWorld& World, ARecastNavMesh& NavMesh, cons
 					Buckets.FindOrAdd(FIntPoint(X, Y)).Add(SurfaceIndex);
 				}
 			}
-			TArray<FNavigationPortalEdge> Walls;
+			Walls.Reset();
 			NavMesh.GetPolyWallSegments(Poly.Ref, GroundFilter, &Bot, Walls);
 			for (const FNavigationPortalEdge& Wall : Walls)
 			{
@@ -400,6 +404,10 @@ bool PFNavigationLinkBuilder::Build(UWorld& World, ARecastNavMesh& NavMesh, cons
 	int32 CheckedCandidates = 0;
 	FScopedSlowTask Progress(Samples.Num(), NSLOCTEXT("PFNavigation", "BuildLinks", "Generating navigation traversal links"));
 	Progress.MakeDialog(true);
+	TSet<int32> Nearby;
+	TArray<FCandidate> Candidates;
+	TArray<FVector> Points;
+	TArray<int32> Accepted;
 	for (int32 SampleIndex = 0; SampleIndex < Samples.Num(); ++SampleIndex)
 	{
 		if (Progress.ShouldCancel())
@@ -424,7 +432,7 @@ bool PFNavigationLinkBuilder::Build(UWorld& World, ARecastNavMesh& NavMesh, cons
 		const double Range = Settings.MaxSpeed * Longest.Time;
 		const FIntPoint Min = Bucket(Start - FVector(Range, Range, 0));
 		const FIntPoint Max = Bucket(Start + FVector(Range, Range, 0));
-		TSet<int32> Nearby;
+		Nearby.Reset();
 		for (int32 X = Min.X; X <= Max.X; ++X)
 		{
 			for (int32 Y = Min.Y; Y <= Max.Y; ++Y)
@@ -438,7 +446,7 @@ bool PFNavigationLinkBuilder::Build(UWorld& World, ARecastNavMesh& NavMesh, cons
 				}
 			}
 		}
-		TArray<FCandidate> Candidates;
+		Candidates.Reset();
 		const double Apex = FMath::Square(Settings.JumpSpeed) / (2.0 * Settings.Gravity);
 		for (int32 SurfaceIndex : Nearby)
 		{
@@ -447,7 +455,7 @@ bool PFNavigationLinkBuilder::Build(UWorld& World, ARecastNavMesh& NavMesh, cons
 			{
 				continue;
 			}
-			TArray<FVector> Points;
+			Points.Reset();
 			FVector Closest;
 			if (NavMesh.GetClosestPointOnPoly(Surface.Ref, Start, Closest))
 			{
@@ -485,7 +493,7 @@ bool PFNavigationLinkBuilder::Build(UWorld& World, ARecastNavMesh& NavMesh, cons
 			if (A.Point.X != B.Point.X) return A.Point.X < B.Point.X;
 			return A.Point.Y < B.Point.Y;
 		});
-		TArray<int32> Accepted;
+		Accepted.Reset();
 		auto TryCandidate = [&](const FCandidate& Candidate, EPFNavigationTraversal Mode)
 		{
 			FVector End;
@@ -517,7 +525,7 @@ bool PFNavigationLinkBuilder::Build(UWorld& World, ARecastNavMesh& NavMesh, cons
 			if (Mode == EPFNavigationTraversal::Drop)
 			{
 				float Duration;
-				if (!PFNavigationTraversal::ValidateDrop(World, Start, End, Settings, Duration))
+				if (!PFNavigationTraversal::ValidateDrop(World, Start, End, Settings, Duration, false))
 				{
 					return;
 				}
@@ -526,7 +534,7 @@ bool PFNavigationLinkBuilder::Build(UWorld& World, ARecastNavMesh& NavMesh, cons
 			{
 				FPFTraversalSolution Jump;
 				if (HasNoJumpTag(World, Start, End, Settings)
-					|| !PFNavigationTraversal::ValidateJump(World, Start, End, Settings, Jump))
+					|| !PFNavigationTraversal::ValidateJump(World, Start, End, Settings, Jump, false))
 				{
 					return;
 				}

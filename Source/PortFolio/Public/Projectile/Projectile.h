@@ -27,6 +27,8 @@ public:
 
 	void SetParent(class APFCharacter* character);
 	void SetSourceAbility(class UGameplayAbility* InSourceAbility);
+	class APFCharacter* GetSourceCharacter() const { return Parent; }
+	bool IsPoolActive() const { return bIsActive; }
 
 	virtual FReturnToPoolDelegate& GetReturnDelegate() override
 	{

@@ -38,18 +38,14 @@ AUltGun::AUltGun() : MeshCom(nullptr), PFAnim(nullptr)
 // 종료된 총 몽타주 반영
 void AUltGun::OnMontageEnd(UAnimMontage* Montage, bool bInterrupted)
 {
-	int MontageIdx = PFAnim->MontageEndTask(Montage);
+	PFAnim->MontageEndTask(Montage);
 }
 
 void AUltGun::PostInitializeComponents()
 {
 	PFAnim = Cast<UPFAnimInst_UltGun>(MeshCom->GetAnimInstance());
-	PFCHECK(nullptr != PFAnim);
+	checkf(PFAnim, TEXT("UltGun AnimInstance is required"));
 	Super::PostInitializeComponents();
-	if (!PFAnim)
-	{
-		PFLOG(Fatal, TEXT("UltGun AnimInst Failed"));
-	}
 
 	// 몽타주 종료 연결, 총 표시 초기화
 	PFAnim->OnMontageEnded.AddDynamic(this, &AUltGun::OnMontageEnd);
@@ -63,10 +59,48 @@ USkeletalMeshComponent* AUltGun::GetMesh()
 	return MeshCom;
 }
 
-// 부모 메시 소켓에 부착
-void AUltGun::AttachToParent(USkeletalMeshComponent* ParentMesh, FName SocketName)
+
+// 원본 총의 자세를 1인칭 팔 위치에 표시
+void AUltGun::SetFirstPersonPresentation(USkeletalMeshComponent* FirstPersonParent)
 {
-	MeshCom->AttachToComponent(ParentMesh, FAttachmentTransformRules::SnapToTargetIncludingScale, SocketName);
+	const bool bEnable = FirstPersonParent != nullptr;
+	if (bEnable && !FirstPersonMesh)
+	{
+		FirstPersonMesh = NewObject<USkeletalMeshComponent>(this, TEXT("FirstPersonUltGun"));
+		FirstPersonMesh->SetSkeletalMesh(MeshCom->GetSkeletalMeshAsset());
+		FirstPersonMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		FirstPersonMesh->SetGenerateOverlapEvents(false);
+		FirstPersonMesh->SetCanEverAffectNavigation(false);
+		FirstPersonMesh->SetOnlyOwnerSee(true);
+		FirstPersonMesh->SetCastShadow(false);
+		FirstPersonMesh->SetFirstPersonPrimitiveType(EFirstPersonPrimitiveType::FirstPerson);
+		FirstPersonMesh->SetVisibility(false);
+		FirstPersonMesh->RegisterComponent();
+		FirstPersonMesh->SetLeaderPoseComponent(MeshCom, true, false);
+	}
+	if (bEnable && FirstPersonMesh->GetAttachParent() != FirstPersonParent)
+	{
+		FirstPersonMesh->AttachToComponent(FirstPersonParent, FAttachmentTransformRules::SnapToTargetIncludingScale, TEXT("UltGunAttach"));
+	}
+	if (bEnable != bFirstPersonActive)
+	{
+		bFirstPersonActive = bEnable;
+		MeshCom->SetOwnerNoSee(bEnable);
+		MeshCom->SetFirstPersonPrimitiveType(bEnable ? EFirstPersonPrimitiveType::WorldSpaceRepresentation : EFirstPersonPrimitiveType::None);
+		if (bEnable)
+		{
+			SavedAnimTickOption = MeshCom->VisibilityBasedAnimTickOption;
+			MeshCom->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
+		}
+		else
+		{
+			MeshCom->VisibilityBasedAnimTickOption = SavedAnimTickOption;
+		}
+	}
+	if (FirstPersonMesh)
+	{
+		FirstPersonMesh->SetVisibility(bEnable && FirstPersonParent->IsVisible() && MeshCom->IsVisible());
+	}
 }
 
 // 궁극기 총 몽타주 재생

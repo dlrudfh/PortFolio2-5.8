@@ -26,7 +26,10 @@ void UPFCrosshairWidget::SetCharacterTargeted(bool bTargeted)
 	}
 
 	bCharacterTargeted = bTargeted;
-	InvalidateLayoutAndVolatility();
+	if (TSharedPtr<SWidget> Widget = GetCachedWidget())
+	{
+		Widget->Invalidate(EInvalidateWidgetReason::Paint);
+	}
 }
 
 int32 UPFCrosshairWidget::NativePaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const

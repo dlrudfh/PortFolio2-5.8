@@ -78,6 +78,16 @@ public:
 	UPFGE_AddCoin();
 };
 
+// 코인 소모 효과
+UCLASS()
+class PORTFOLIO_API UPFGE_CoinCost : public UGameplayEffect
+{
+	GENERATED_BODY()
+
+public:
+	UPFGE_CoinCost();
+};
+
 // 경험치 획득 효과
 UCLASS()
 class PORTFOLIO_API UPFGE_AddExperience : public UGameplayEffect
@@ -138,11 +148,48 @@ public:
 	UPFGE_AttackPowerUpgrade();
 };
 
+// 초기화, 복원할 스탯 수치
+USTRUCT()
+struct FPFStatValues
+{
+	GENERATED_BODY()
+
+	FPFStatValues() = default;
+	explicit FPFStatValues(const UPFAttributeSet& Attributes);
+	explicit FPFStatValues(const struct FPFCharacterData& Data);
+
+	UPROPERTY()
+	float Level = 1.f;
+
+	UPROPERTY()
+	float Experience = 0.f;
+
+	UPROPERTY()
+	float Health = 10.f;
+
+	UPROPERTY()
+	float MaxHealth = 10.f;
+
+	UPROPERTY()
+	float Mana = 10.f;
+
+	UPROPERTY()
+	float MaxMana = 10.f;
+
+	UPROPERTY()
+	float AttackPower = 1.f;
+
+	UPROPERTY()
+	float Coin = 0.f;
+
+	UPROPERTY()
+	float StatPoint = 10.f;
+};
+
 // 스탯 효과 적용 헬퍼
 struct PORTFOLIO_API FPFGE_StatGameplayEffects
 {
-	static bool InitializeStats(class UAbilitySystemComponent* TargetASC, float Level, float Experience,
-		float Health, float MaxHealth, float Mana, float MaxMana, float AttackPower, float Coin, float StatPoint);
+	static bool InitializeStats(class UAbilitySystemComponent* TargetASC, const FPFStatValues& Values);
 	static bool ApplyDamage(class UAbilitySystemComponent* SourceASC, class UAbilitySystemComponent* TargetASC,
 		float AttackPower, float Damage, class AActor* Instigator, class AActor* EffectCauser,
 		const UObject* SourceObject = nullptr, const class UGameplayAbility* SourceAbility = nullptr,
@@ -152,6 +199,7 @@ struct PORTFOLIO_API FPFGE_StatGameplayEffects
 	static bool ApplyHeal(class UAbilitySystemComponent* TargetASC, float Amount);
 	static bool ApplyManaRestore(class UAbilitySystemComponent* TargetASC, float Amount);
 	static bool ApplyCoin(class UAbilitySystemComponent* TargetASC, float Amount);
+	static bool TryApplyCoinCost(class UAbilitySystemComponent* TargetASC, float Cost);
 	static bool ApplyExperience(class UAbilitySystemComponent* TargetASC, float Amount);
 	static bool TryApplyManaCost(class UAbilitySystemComponent* TargetASC, const class UPFAttributeSet* AttributeSet, float Cost);
 	static FActiveGameplayEffectHandle ApplyManaRegen(class UAbilitySystemComponent* TargetASC);

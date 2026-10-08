@@ -1,5 +1,7 @@
 ﻿#include "GAS/Abilities/Movement/PFGA_CharacterJump.h"
+#include "GAS/PFGameplayTags.h"
 #include "Character/PFCharacter.h"
+#include "Campaign/PFCampaignDirector.h"
 
 UPFGA_CharacterJump::UPFGA_CharacterJump()
 {
@@ -8,10 +10,10 @@ UPFGA_CharacterJump::UPFGA_CharacterJump()
 	NetExecutionPolicy = EGameplayAbilityNetExecutionPolicy::LocalPredicted;
 
 	FGameplayTagContainer AssetTags;
-	AssetTags.AddTag(FGameplayTag::RequestGameplayTag(FName("Character.Ability.Jump")));
+	AssetTags.AddTag(PFGameplayTags::Character_Ability_Jump);
 	SetAssetTags(AssetTags);
 
-	ActivationBlockedTags.AddTag(FGameplayTag::RequestGameplayTag(FName("Character.Block.Jump")));
+	ActivationBlockedTags.AddTag(PFGameplayTags::Character_Block_Jump);
 }
 
 bool UPFGA_CharacterJump::CanActivateAbility(
@@ -23,6 +25,7 @@ bool UPFGA_CharacterJump::CanActivateAbility(
 ) const
 {
 	const APFCharacter* Character = ActorInfo ? Cast<APFCharacter>(ActorInfo->AvatarActor.Get()) : nullptr;
+	if (Character && APFCampaignDirector::BlocksInput(Character->GetController())) return false;
 	if (!Character || Character->IsJumpPadFlightActive())
 	{
 		return false;

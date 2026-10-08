@@ -1,219 +1,118 @@
 #include "UI/Inventory/PFCooldownOverlayWidget.h"
 
-#include "Engine/Texture2D.h"
+#include "Rendering/DrawElements.h"
+#include "Rendering/SlateResourceHandle.h"
+#include "Widgets/Images/SImage.h"
 
 namespace
 {
-	const FVector2D CooldownMaskCenter(0.5f, 0.5f);
-	const FVector2D CooldownMaskStartPoint(0.5f, 0.f);
-
-	// 시계 방향 마스크 경계점
-	const TArray<FVector2D> CooldownBoundaryEndpoints =
+	// 사각형 경계를 따라 그리는 쿨타임 마스크
+	class SPFCooldownImage : public SImage
 	{
-		FVector2D(1.f, 0.f),
-		FVector2D(1.f, 0.5f),
-		FVector2D(1.f, 1.f),
-		FVector2D(0.5f, 1.f),
-		FVector2D(0.f, 1.f),
-		FVector2D(0.f, 0.5f),
-		FVector2D(0.f, 0.f),
-		FVector2D(0.5f, 0.f)
+	public:
+		// 진행률, 마스크 색상 반영
+		void SetCooldown(float InProgress, const FLinearColor& InColor)
+		{
+			if (Progress != InProgress || OverlayColor != InColor)
+			{
+				Progress = InProgress;
+				OverlayColor = InColor;
+				Invalidate(EInvalidateWidgetReason::Paint);
+			}
+		}
+
+		virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& Geometry, const FSlateRect& CullingRect,
+			FSlateWindowElementList& Elements, int32 Layer, const FWidgetStyle& Style, bool bParentEnabled) const override
+		{
+			const FSlateBrush* Brush = GetImageAttribute().Get();
+			if (Progress <= 0.f || !Brush || Brush->DrawAs == ESlateBrushDrawType::NoDrawType) return Layer;
+
+			const FLinearColor Tint = OverlayColor * Style.GetColorAndOpacityTint()
+				* GetColorAndOpacityAttribute().Get().GetColor(Style) * Brush->GetTint(Style);
+			const FColor Color = Tint.ToFColor(true);
+			const FGeometry PaintGeometry = bFlipForRightToLeftFlowDirection && GSlateFlowDirection == EFlowDirection::RightToLeft
+				? Geometry.MakeChild(FSlateRenderTransform(FScale2D(-1.f, 1.f))) : Geometry;
+			const FVector2f Size(PaintGeometry.GetLocalSize());
+			TArray<FSlateVertex> Vertices;
+			TArray<SlateIndex> Indices;
+			Vertices.Reserve(10);
+			Indices.Reserve(24);
+			const auto AddVertex = [&](FVector2f Point)
+			{
+				if (Brush->Mirroring == ESlateBrushMirrorType::Horizontal || Brush->Mirroring == ESlateBrushMirrorType::Both) Point.X = 1.f - Point.X;
+				if (Brush->Mirroring == ESlateBrushMirrorType::Vertical || Brush->Mirroring == ESlateBrushMirrorType::Both) Point.Y = 1.f - Point.Y;
+				Vertices.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(
+					PaintGeometry.GetAccumulatedRenderTransform(), Point * Size, FVector2f::ZeroVector, Color));
+			};
+
+			// 현재 경계부터 시계 방향으로 남은 영역 연결
+			const FVector2f Center(.5f, .5f);
+			const float Sweep = FMath::Clamp((1.f - Progress) * 360.f, 0.f, 359.999f);
+			const float Angle = FMath::DegreesToRadians(Sweep - 90.f);
+			const FVector2f Direction(FMath::Cos(Angle), FMath::Sin(Angle));
+			AddVertex(Center);
+			AddVertex(Center + Direction * (.5f / FMath::Max(FMath::Abs(Direction.X), FMath::Abs(Direction.Y))));
+			static const FVector2f Boundary[] = {
+				{1.f, 0.f}, {1.f, .5f}, {1.f, 1.f}, {.5f, 1.f},
+				{0.f, 1.f}, {0.f, .5f}, {0.f, 0.f}, {.5f, 0.f}
+			};
+			for (int32 Index = FMath::FloorToInt(Sweep / 45.f); Index < UE_ARRAY_COUNT(Boundary); ++Index)
+			{
+				AddVertex(Boundary[Index]);
+				Indices.Add(0);
+				Indices.Add(static_cast<SlateIndex>(Vertices.Num() - 2));
+				Indices.Add(static_cast<SlateIndex>(Vertices.Num() - 1));
+			}
+			const ESlateDrawEffect Effect = ShouldBeEnabled(bParentEnabled) ? ESlateDrawEffect::None : ESlateDrawEffect::DisabledEffect;
+			FSlateDrawElement::MakeCustomVerts(Elements, Layer, FSlateResourceHandle(), Vertices, Indices, nullptr, 0, 0, Effect);
+			return Layer;
+		}
+
+	private:
+		float Progress = 0.f;
+		FLinearColor OverlayColor = FLinearColor::Transparent;
 	};
+}
+
+TSharedRef<SWidget> UPFCooldownOverlayWidget::RebuildWidget()
+{
+	FSlateBrush MaskBrush = GetBrush();
+	MaskBrush.SetResourceObject(nullptr);
+	MaskBrush.ImageSize = FVector2D(64.f);
+	SetBrush(MaskBrush);
+	MyImage = SNew(SPFCooldownImage).FlipForRightToLeftFlowDirection(ShouldFlipForRightToLeftFlowDirection());
+	UpdateOverlay();
+	return MyImage.ToSharedRef();
 }
 
 // 쿨타임 비율 반영
 void UPFCooldownOverlayWidget::SetCooldownProgress(float InCooldownProgress)
 {
 	InCooldownProgress = FMath::Clamp(InCooldownProgress, 0.f, 1.f);
-	if (MaskTexture && CooldownProgress == InCooldownProgress)
-	{
-		return;
-	}
-
+	if (CooldownProgress == InCooldownProgress) return;
 	CooldownProgress = InCooldownProgress;
-
-	UpdateMaskTexture();
+	UpdateOverlay();
 }
 
 // 마스크 색상 설정
 void UPFCooldownOverlayWidget::SetOverlayColor(const FLinearColor& InOverlayColor)
 {
-	if (MaskTexture && OverlayColor == InOverlayColor)
-	{
-		return;
-	}
-
+	if (OverlayColor == InOverlayColor) return;
 	OverlayColor = InOverlayColor;
-
-	UpdateMaskTexture();
+	UpdateOverlay();
 }
 
 void UPFCooldownOverlayWidget::SynchronizeProperties()
 {
 	Super::SynchronizeProperties();
-	EnsureMaskTexture();
-	UpdateMaskTexture();
+	UpdateOverlay();
 }
 
-// 쿨타임 마스크 텍스처 준비
-void UPFCooldownOverlayWidget::EnsureMaskTexture()
+// 생성된 Slate 마스크 갱신
+void UPFCooldownOverlayWidget::UpdateOverlay()
 {
-	if (MaskTexture)
+	if (MyImage.IsValid())
 	{
-		return;
+		StaticCastSharedPtr<SPFCooldownImage>(MyImage)->SetCooldown(CooldownProgress, OverlayColor);
 	}
-
-	// 동적 텍스처 생성, 브러시 연결
-	MaskTexture = UTexture2D::CreateTransient(MaskTextureSize, MaskTextureSize, PF_B8G8R8A8);
-	if (!MaskTexture)
-	{
-		return;
-	}
-
-	MaskTexture->SRGB = true;
-	MaskTexture->Filter = TF_Bilinear;
-	MaskTexture->AddressX = TA_Clamp;
-	MaskTexture->AddressY = TA_Clamp;
-	MaskTexture->UpdateResource();
-
-	PixelBuffer.Init(FColor::Transparent, MaskTextureSize * MaskTextureSize);
-	SetBrushFromTexture(MaskTexture, true);
-	SetColorAndOpacity(FLinearColor::White);
-}
-
-// 쿨타임 마스크 픽셀 갱신
-void UPFCooldownOverlayWidget::UpdateMaskTexture()
-{
-	EnsureMaskTexture();
-	if (!MaskTexture)
-	{
-		return;
-	}
-
-	if (PixelBuffer.Num() != MaskTextureSize * MaskTextureSize)
-	{
-		PixelBuffer.Init(FColor::Transparent, MaskTextureSize * MaskTextureSize);
-	}
-
-	// 버퍼 초기화, 남은 구간 채우기
-	for (FColor& Pixel : PixelBuffer)
-	{
-		Pixel = FColor::Transparent;
-	}
-
-	if (CooldownProgress > 0.f)
-	{
-		const TArray<FVector2D> BoundaryPath = BuildCooldownBoundaryPath();
-		const FColor FillColor = OverlayColor.ToFColor(true);
-
-		for (int32 Y = 0; Y < MaskTextureSize; ++Y)
-		{
-			for (int32 X = 0; X < MaskTextureSize; ++X)
-			{
-				const FVector2D NormalizedPoint(
-					(static_cast<float>(X) + 0.5f) / static_cast<float>(MaskTextureSize),
-					(static_cast<float>(Y) + 0.5f) / static_cast<float>(MaskTextureSize));
-
-				if (IsPointInsideCooldownMask(NormalizedPoint, BoundaryPath))
-				{
-					PixelBuffer[(Y * MaskTextureSize) + X] = FillColor;
-				}
-			}
-		}
-	}
-
-	// 픽셀 업로드 후 임시 메모리 해제
-	static const FUpdateTextureRegion2D FullRegion(0, 0, 0, 0, MaskTextureSize, MaskTextureSize);
-	const int32 DataSize = PixelBuffer.Num() * sizeof(FColor);
-	uint8* RawData = new uint8[DataSize];
-	FMemory::Memcpy(RawData, PixelBuffer.GetData(), DataSize);
-
-	MaskTexture->UpdateTextureRegions(
-		0,
-		1,
-		&FullRegion,
-		MaskTextureSize * sizeof(FColor),
-		sizeof(FColor),
-		RawData,
-		[](uint8* SrcData, const FUpdateTextureRegion2D*)
-		{
-			delete[] SrcData;
-		});
-}
-
-// 남은 쿨타임의 경계 경로 계산
-TArray<FVector2D> UPFCooldownOverlayWidget::BuildCooldownBoundaryPath() const
-{
-	TArray<FVector2D> BoundaryPath;
-	BoundaryPath.Reserve(10);
-
-	if (CooldownProgress <= 0.f)
-	{
-		return BoundaryPath;
-	}
-
-	// 진행 각도를 사각형 경계 좌표로 변환
-	const float ElapsedAlpha = 1.f - CooldownProgress;
-	const float SweepDegrees = FMath::Clamp(ElapsedAlpha * 360.f, 0.f, 359.999f);
-	const float AngleRadians = FMath::DegreesToRadians(-90.f + SweepDegrees);
-	const FVector2D Direction(FMath::Cos(AngleRadians), FMath::Sin(AngleRadians));
-	const float DirectionScale = 0.5f / FMath::Max(FMath::Abs(Direction.X), FMath::Abs(Direction.Y));
-	const FVector2D CurrentPoint = CooldownMaskCenter + (Direction * DirectionScale);
-	const int32 SegmentIndex = FMath::Clamp(FMath::FloorToInt(SweepDegrees / 45.f), 0, CooldownBoundaryEndpoints.Num() - 1);
-
-	// 현재 경계부터 남은 외곽 경로 구성
-	BoundaryPath.Add(CurrentPoint);
-
-	for (int32 EndpointIndex = SegmentIndex; EndpointIndex < CooldownBoundaryEndpoints.Num(); ++EndpointIndex)
-	{
-		if (BoundaryPath.Last().Equals(CooldownBoundaryEndpoints[EndpointIndex], KINDA_SMALL_NUMBER))
-		{
-			continue;
-		}
-
-		BoundaryPath.Add(CooldownBoundaryEndpoints[EndpointIndex]);
-	}
-
-	if (BoundaryPath.Num() == 1 || !BoundaryPath.Last().Equals(CooldownMaskStartPoint, KINDA_SMALL_NUMBER))
-	{
-		BoundaryPath.Add(CooldownMaskStartPoint);
-	}
-
-	return BoundaryPath;
-}
-
-// 마스크 내부 좌표 판정
-bool UPFCooldownOverlayWidget::IsPointInsideCooldownMask(const FVector2D& NormalizedPoint, const TArray<FVector2D>& BoundaryPath) const
-{
-	if (BoundaryPath.Num() < 2)
-	{
-		return false;
-	}
-
-	for (int32 PathIndex = 0; PathIndex < BoundaryPath.Num() - 1; ++PathIndex)
-	{
-		if (IsPointInTriangle(NormalizedPoint, CooldownMaskCenter, BoundaryPath[PathIndex], BoundaryPath[PathIndex + 1]))
-		{
-			return true;
-		}
-	}
-
-	return false;
-}
-
-// 삼각형 내부 좌표 판정
-bool UPFCooldownOverlayWidget::IsPointInTriangle(const FVector2D& Point, const FVector2D& A, const FVector2D& B, const FVector2D& C) const
-{
-	const float Denominator = ((B.Y - C.Y) * (A.X - C.X)) + ((C.X - B.X) * (A.Y - C.Y));
-	if (FMath::IsNearlyZero(Denominator))
-	{
-		return false;
-	}
-
-	const float Alpha = (((B.Y - C.Y) * (Point.X - C.X)) + ((C.X - B.X) * (Point.Y - C.Y))) / Denominator;
-	const float Beta = (((C.Y - A.Y) * (Point.X - C.X)) + ((A.X - C.X) * (Point.Y - C.Y))) / Denominator;
-	const float Gamma = 1.f - Alpha - Beta;
-	const float Epsilon = -0.0001f;
-
-	return Alpha >= Epsilon && Beta >= Epsilon && Gamma >= Epsilon;
 }

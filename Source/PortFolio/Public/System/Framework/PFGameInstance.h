@@ -10,6 +10,7 @@
 #include "OnlineSessionSettings.h"
 #include "Online/OnlineSessionNames.h"
 #include "Interfaces/OnlineSessionInterface.h"
+#include "System/Framework/PFSessionGameState.h"
 
 #include "PFGameInstance.generated.h"
 
@@ -75,6 +76,8 @@ public:
 	virtual void Shutdown() override;
 	virtual void ReturnToMainMenu() override;
 	void CreateTitle();
+	void RemoveTitle();
+	void StartTutorial();
 	float GetMenuVolume() const { return MenuVolume; }
 	float GetCameraSensitivity() const { return CameraSensitivity; }
 	void SetMenuVolume(float Value);
@@ -83,12 +86,11 @@ public:
 	void SaveMenuSettings();
 
 	FPFCharacterData* GetPFCharacterData(int32 CharacterID);
-	FPFItemData* GetPFItemData(int32 ItemID);
 	UPROPERTY()
 	TSubclassOf<UUserWidget> TitleWidgetClass;
 
 	UFUNCTION(BlueprintCallable)
-	void CreateGameSession(const FString& SessionName);
+	void CreateGameSession(const FString& SessionName, EPFSessionMode Mode = EPFSessionMode::Story, int32 Capacity = 2);
 	UFUNCTION(BlueprintCallable)
 	bool JoinGameSession(const FString& SessionName);
 	UFUNCTION()
@@ -98,6 +100,12 @@ public:
 	void OnCreateSessionComplete(FName SessionName, bool IsSucceeded);
 	void OnFindSessionsComplete(bool IsSucceeded);
 	void OnJoinSessionComplete(FName SessionName, EOnJoinSessionCompleteResult::Type Result);
+	EPFSessionMode GetPendingSessionMode() const { return PendingSessionMode; }
+	int32 GetPendingSessionCapacity() const { return PendingSessionCapacity; }
+	const FString& GetSessionRoomName() const { return InputSessionName; }
+	FString GetOnlineUsername() const;
+	bool BeginLobbyMatch(EPFSessionMode Mode, FName Map);
+	bool HasSessionMatchStarted() const { return bSessionMatchStarted; }
 	
 	// 온라인 세션 인터페이스
 	IOnlineSessionPtr OnlineSessionInterface;
@@ -129,7 +137,8 @@ private:
 	{
 		None,
 		Create,
-		Join
+		Join,
+		Tutorial
 	};
 
 	bool RequestSession(ESessionRequest Request, const FString& SessionName);
@@ -139,8 +148,11 @@ private:
 	void HandleTravelFailure(UWorld* World, ETravelFailure::Type FailureType, const FString& Error);
 	void HandleMapLoaded(UWorld* World);
 	bool TickSessionRecovery(float DeltaTime);
+	bool IsLocalSessionHost(const FNamedOnlineSession& Session) const;
 	bool IsSessionHostAvailable(const FNamedOnlineSession& Session) const;
 	void OnHostHeartbeatComplete(FName SessionName, bool bSucceeded);
+	void PublishHostedSession();
+	void TravelToLobbyMatch();
 	void RecoverPreviousLobby();
 	void SaveRecoveryLobby(const FString& LobbyId);
 	void BeginSessionCleanup();
@@ -154,20 +166,20 @@ private:
 
 	UPROPERTY()
 	ECHARACTER CharacterType;
-	// 캐릭터, 아이템 데이터 테이블
+	// 캐릭터 데이터 테이블
 	UPROPERTY()
 	class UDataTable* PFCharacterTable;
-	UPROPERTY()
-	class UDataTable* PFItemTable;
 	// 타이틀 UI
 	UPROPERTY()
 	class UPFTitle* TitleWidget;
 	UPROPERTY()
-	bool IsFindSession;
-	UPROPERTY()
 	FString Address;
 
 	FString InputSessionName;
+	EPFSessionMode PendingSessionMode = EPFSessionMode::Story;
+	int32 PendingSessionCapacity = 2;
+	FString PendingGameplayTravelURL;
+	TWeakObjectPtr<UWorld> ObservedSessionWorld;
 	FText SessionNotice;
 	FString RecoverySettingsSection;
 	FString JoiningLobbyId;
@@ -205,6 +217,9 @@ private:
 	bool bStartupLobbyRecovered = false;
 	bool bCleanupTimedOut = false;
 	bool bHostHeartbeatPending = false;
+	bool bLobbyReady = false;
+	bool bSessionMatchStarted = false;
+	bool bPublishingMatchStart = false;
 	double CleanupDeadline = 0.0;
 	double SessionOperationStartedAt = 0.0;
 	double LastHostHeartbeatReceivedAt = 0.0;

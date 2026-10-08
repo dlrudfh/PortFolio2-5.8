@@ -1,32 +1,17 @@
 #include "System/Framework/PFPlayerState.h"
+#include "Campaign/PFCampaignSubsystem.h"
+#include "Campaign/PFCampaignDirector.h"
+#include "GameFramework/Controller.h"
 
 #include "AbilitySystemComponent.h"
 #include "System/Framework/PFGameInstance.h"
+#include "System/Framework/PFPlayerController.h"
+#include "System/Framework/PFSessionGameState.h"
+#include "System/Framework/PFTutorialManager.h"
 #include "GAS/Effects/PFGE_StatGameplayEffects.h"
 #include "GAS/PFGameplayTags.h"
 #include "Character/PFCharacter.h"
 #include "Props/PFItem.h"
-
-namespace PFPlayerStatePrivate
-{
-	// 아이템별 쿨타임 태그 조회
-	FGameplayTag GetItemCooldownTag(int32 ItemID)
-	{
-		switch (ItemID)
-		{
-		case etoi(APFItem::EITEM::ITEM_HPPOTION):
-			return PFGameplayTags::Item_Cooldown_HP;
-		case etoi(APFItem::EITEM::ITEM_MPPOTION):
-			return PFGameplayTags::Item_Cooldown_MP;
-		case etoi(APFItem::EITEM::ITEM_SHIELD):
-			return PFGameplayTags::Item_Cooldown_Shield;
-		case etoi(APFItem::EITEM::ITEM_COIN):
-			return PFGameplayTags::Item_Cooldown_Coin;
-		default:
-			return FGameplayTag();
-		}
-	}
-}
 
 APFPlayerState::APFPlayerState()
 {
@@ -38,11 +23,119 @@ APFPlayerState::APFPlayerState()
 
 	InitializeInventorySlots();
 	InitializeQuickSlots();
+
 }
 
 UAbilitySystemComponent* APFPlayerState::GetAbilitySystemComponent() const
 {
 	return AbilitySystemComponent;
+}
+
+void APFPlayerState::SetPlayerName(const FString& Name)
+{
+	const FString PreviousName = GetPlayerName();
+	Super::SetPlayerName(Name);
+	if (GetPlayerName() != PreviousName) OnPlayerInfoChanged.Broadcast();
+}
+
+void APFPlayerState::OnRep_PlayerName()
+{
+	Super::OnRep_PlayerName();
+	OnPlayerInfoChanged.Broadcast();
+}
+
+// 선택 캐릭터 변경 알림
+void APFPlayerState::OnRep_CharacterType()
+{
+	OnPlayerInfoChanged.Broadcast();
+}
+
+// 로비 선택, 준비 상태 변경 알림
+void APFPlayerState::OnRep_LobbyState()
+{
+	OnPlayerInfoChanged.Broadcast();
+}
+
+// 서버의 로비 캐릭터 선택 반영
+void APFPlayerState::SetLobbySelection(ECHARACTER SelectedCharacter, bool bSelected)
+{
+	if (!HasAuthority() || (SelectedCharacter != CHARACTER_TWINBLAST && SelectedCharacter != CHARACTER_KWANG)) return;
+	if (CharacterType == SelectedCharacter && bLobbyCharacterSelected == bSelected) return;
+	CharacterType = SelectedCharacter;
+	bLobbyCharacterSelected = bSelected;
+	bLobbyReady = false;
+	OnPlayerInfoChanged.Broadcast();
+	ForceNetUpdate();
+}
+
+// 서버의 로비 준비 상태 반영
+void APFPlayerState::SetLobbyReady(bool bReady)
+{
+	if (!HasAuthority()) return;
+	const bool bNewReady = bReady && bLobbyCharacterSelected;
+	if (bLobbyReady == bNewReady) return;
+	bLobbyReady = bNewReady;
+	OnRep_LobbyState();
+	ForceNetUpdate();
+}
+
+// 로비 참가 순서 반영
+void APFPlayerState::SetLobbySlot(int32 Slot)
+{
+	if (!HasAuthority() || LobbySlot == Slot) return;
+	LobbySlot = Slot;
+	OnRep_LobbyState();
+	ForceNetUpdate();
+}
+
+// 체크포인트 소지품 복원
+void APFPlayerState::RestoreCampaignInventory(const TArray<FPFInventorySlot>& Slots, const TArray<int32>& QuickSlots)
+{
+	if (!HasAuthority()) return;
+	InventorySlots = Slots;
+	QuickSlotItemIDs = QuickSlots;
+	InitializeInventorySlots();
+	InitializeQuickSlots();
+	bHasGrantedInitialItems = true;
+	SanitizeQuickSlots();
+	OnRep_InventorySlots();
+	ForceNetUpdate();
+}
+
+// 체크포인트 전투 상태 정리, 체력과 마나 회복
+void APFPlayerState::PrepareCampaignCheckpoint()
+{
+	if (!HasAuthority()) return;
+	if (AbilitySystemComponent->GetOwnerActor() != this) AbilitySystemComponent->InitAbilityActorInfo(this, GetPawn());
+	InitializeGASStats();
+	AbilitySystemComponent->CancelAllAbilities();
+	for (FActiveGameplayEffectHandle Handle : AbilitySystemComponent->GetActiveEffects(FGameplayEffectQuery()))
+	{
+		const FActiveGameplayEffect* Effect = AbilitySystemComponent->GetActiveGameplayEffect(Handle);
+		if (Effect && Effect->Spec.Def && (Effect->Spec.Def->IsA<UPFGE_ItemCooldown>() || Effect->Spec.Def->IsA<UPFGE_Shield>()))
+			AbilitySystemComponent->RemoveActiveGameplayEffect(Handle);
+	}
+	for (FGameplayTag Tag : { FGameplayTag(PFGameplayTags::Character_State_Dead), FGameplayTag(PFGameplayTags::Character_State_Sprinting),
+		FGameplayTag(PFGameplayTags::Character_State_Ultimate) })
+		AbilitySystemComponent->SetLooseGameplayTagCount(Tag, 0, EGameplayTagReplicationState::TagOnly);
+	FPFGE_StatGameplayEffects::ApplyHeal(AbilitySystemComponent, AttributeSet->GetMaxHealth() - AttributeSet->GetHealth());
+	FPFGE_StatGameplayEffects::ApplyManaRestore(AbilitySystemComponent, AttributeSet->GetMaxMana() - AttributeSet->GetMana());
+}
+
+// 공간이 확보된 경우에만 보급 묶음 지급
+bool APFPlayerState::GrantCampaignSupply()
+{
+	if (!HasAuthority()) return false;
+	const TArray<FPFInventorySlot> Before = InventorySlots;
+	if (!AddInventoryItemInternal(etoi(APFItem::EITEM::ITEM_HPPOTION), 1)
+		|| !AddInventoryItemInternal(etoi(APFItem::EITEM::ITEM_MPPOTION), 1))
+	{
+		InventorySlots = Before;
+		return false;
+	}
+	OnRep_InventorySlots();
+	ForceNetUpdate();
+	return true;
 }
 
 void APFPlayerState::CopyProperties(APlayerState* NewPlayerState)
@@ -57,26 +150,25 @@ void APFPlayerState::CopyProperties(APlayerState* NewPlayerState)
 
 	// 선택 캐릭터, 소지품, 최초 지급 상태 유지
 	NewState->CharacterType = CharacterType;
+	NewState->bLobbyCharacterSelected = bLobbyCharacterSelected;
+	NewState->LobbySlot = LobbySlot;
+	NewState->bLobbyReady = false;
 	NewState->InventorySlots = InventorySlots;
 	NewState->QuickSlotItemIDs = QuickSlotItemIDs;
 	NewState->bHasGrantedInitialItems = bHasGrantedInitialItems;
 
 	// 새 ASC에 성장, 전투 수치 복원
 	UAbilitySystemComponent* NewASC = NewState->AbilitySystemComponent;
-	if (bGASStatsInitialized && AttributeSet && NewASC)
+	if (bGASStatsInitialized)
 	{
 		NewASC->InitAbilityActorInfo(NewState, nullptr);
-		NewState->bGASStatsInitialized = FPFGE_StatGameplayEffects::InitializeStats(NewASC,
-			AttributeSet->GetLevel(), AttributeSet->GetExperience(),
-			AttributeSet->GetHealth(), AttributeSet->GetMaxHealth(),
-			AttributeSet->GetMana(), AttributeSet->GetMaxMana(),
-			AttributeSet->GetAttackPower(), AttributeSet->GetCoin(), AttributeSet->GetStatPoint());
+		NewState->bGASStatsInitialized = FPFGE_StatGameplayEffects::InitializeStats(NewASC, FPFStatValues(*AttributeSet));
 		NewASC->SetLooseGameplayTagCount(PFGameplayTags::Character_State_Dead,
 			AttributeSet->GetHealth() <= 0.f ? 1 : 0, EGameplayTagReplicationState::TagOnly);
 	}
 
 	// 아이템 쿨타임, 실드의 남은 시간 유지
-	if (AbilitySystemComponent && NewASC && GetWorld())
+	if (GetWorld())
 	{
 		const float WorldTime = GetWorld()->GetTimeSeconds();
 		for (const FActiveGameplayEffectHandle Handle : AbilitySystemComponent->GetActiveEffects(FGameplayEffectQuery()))
@@ -109,7 +201,7 @@ void APFPlayerState::CopyProperties(APlayerState* NewPlayerState)
 // 플레이어 스탯, 마나 재생 초기화
 void APFPlayerState::InitializeGASStats()
 {
-	if (!HasAuthority() || !AbilitySystemComponent || !AttributeSet)
+	if (!HasAuthority())
 	{
 		return;
 	}
@@ -126,17 +218,7 @@ void APFPlayerState::InitializeGASStats()
 			return;
 		}
 
-		bGASStatsInitialized = FPFGE_StatGameplayEffects::InitializeStats(
-			AbilitySystemComponent,
-			static_cast<float>(InitialData->Level),
-			static_cast<float>(InitialData->CurExp),
-			InitialData->MaxHP,
-			InitialData->MaxHP,
-			InitialData->MaxMP,
-			InitialData->MaxMP,
-			InitialData->Damage,
-			0.f,
-			10.f);
+		bGASStatsInitialized = FPFGE_StatGameplayEffects::InitializeStats(AbilitySystemComponent, FPFStatValues(*InitialData));
 	}
 
 	// 마나 재생 효과 유지
@@ -149,6 +231,7 @@ void APFPlayerState::InitializeGASStats()
 // 스탯 강화 요청
 void APFPlayerState::RequestStatIncrease(EPFStatUpgradeType UpgradeType)
 {
+	if (!CanUseUIInput()) return;
 	if (HasAuthority())
 	{
 		ApplyStatIncrease(UpgradeType);
@@ -174,8 +257,8 @@ void APFPlayerState::Server_IncreaseStat_Implementation(int32 UpgradeTypeIndex)
 // 스탯 강화 적용
 void APFPlayerState::ApplyStatIncrease(EPFStatUpgradeType UpgradeType)
 {
-	if (const APFCharacter* Character = Cast<APFCharacter>(GetPawn()); Character && Character->IsJumpPadFlightActive()) return;
-	if (!HasAuthority() || !bGASStatsInitialized || !AbilitySystemComponent || !AttributeSet)
+	if (!CanUseUIInput()) return;
+	if (!bGASStatsInitialized)
 	{
 		return;
 	}
@@ -189,14 +272,19 @@ void APFPlayerState::ApplyStatIncrease(EPFStatUpgradeType UpgradeType)
 void APFPlayerState::BeginPlay()
 {
 	Super::BeginPlay();
+	EnsureInitialInventoryItems();
+}
 
-	if (!HasAuthority() || bHasGrantedInitialItems || !GetWorld())
+// 게임 진입 후 시작 아이템 한 번 지급
+void APFPlayerState::EnsureInitialInventoryItems()
+{
+	if (!HasAuthority() || bHasGrantedInitialItems)
 	{
 		return;
 	}
 
-	const FString LevelName = FPackageName::GetShortName(GetWorld()->GetMapName());
-	if (LevelName.Contains(TEXT("Title")))
+	const APFSessionGameState* Session = APFSessionGameState::Get(GetWorld());
+	if (!Session || !Session->bInitialized || Session->Phase != EPFSessionPhase::Playing)
 	{
 		return;
 	}
@@ -226,11 +314,12 @@ void APFPlayerState::InitializeQuickSlots()
 void APFPlayerState::GrantInitialInventoryItems()
 {
 	bHasGrantedInitialItems = true;
-
-	AddInventoryItem(etoi(APFItem::EITEM::ITEM_HPPOTION), 10);
-	AddInventoryItem(etoi(APFItem::EITEM::ITEM_MPPOTION), MaxInventoryStackCount);
-	AddInventoryItem(etoi(APFItem::EITEM::ITEM_SHIELD), 10);
-	AddInventoryItem(etoi(APFItem::EITEM::ITEM_COIN), 10);
+	const bool bCampaign = UPFCampaignSubsystem::IsCampaign(GetWorld());
+	AddInventoryItemInternal(etoi(APFItem::EITEM::ITEM_HPPOTION), bCampaign ? 3 : 10);
+	AddInventoryItemInternal(etoi(APFItem::EITEM::ITEM_MPPOTION), bCampaign ? 3 : MaxInventoryStackCount);
+	AddInventoryItemInternal(etoi(APFItem::EITEM::ITEM_SHIELD), bCampaign ? 1 : 10);
+	if (!bCampaign) AddInventoryItemInternal(etoi(APFItem::EITEM::ITEM_COIN), 10);
+	OnRep_InventorySlots();
 }
 
 // 선택 캐릭터 저장
@@ -243,7 +332,11 @@ void APFPlayerState::SetCharacter(ECHARACTER SelectedCharacter)
 
 	if (HasAuthority())
 	{
-		CharacterType = SelectedCharacter;
+		if (CharacterType != SelectedCharacter)
+		{
+			CharacterType = SelectedCharacter;
+			OnRep_CharacterType();
+		}
 	}
 	else
 	{
@@ -254,13 +347,90 @@ void APFPlayerState::SetCharacter(ECHARACTER SelectedCharacter)
 // 서버 선택 캐릭터 반영
 void APFPlayerState::Server_SetCharacter_Implementation(ECHARACTER SelectedCharacter)
 {
+	const APFSessionGameState* Session = APFSessionGameState::Get(GetWorld());
+	if (Session && Session->bInitialized && Session->Phase != EPFSessionPhase::Menu) return;
+	if (GetPawn() && APFCampaignDirector::BlocksInput(Cast<AController>(GetOwner()))) return;
 	SetCharacter(SelectedCharacter);
 }
 
 // 서버 인벤토리에 아이템 추가
 bool APFPlayerState::AddInventoryItem(int32 ItemID, int32 Count)
 {
-	return HasAuthority() && AddInventoryItemInternal(ItemID, Count);
+	if (!HasAuthority() || !AddInventoryItemInternal(ItemID, Count)) return false;
+	OnRep_InventorySlots();
+	return true;
+}
+
+// 판매 아이템 가격
+int32 APFPlayerState::GetShopItemPrice(int32 ItemID)
+{
+	const FPFItemDefinition* Definition = APFItem::GetDefinition(ItemID);
+	return Definition ? Definition->Price : 0;
+}
+
+// 아이템을 담을 슬롯 조회
+int32 APFPlayerState::FindAvailableInventorySlot(int32 ItemID) const
+{
+	const int32 Existing = FindInventorySlotIndexByItemID(ItemID);
+	if (Existing != INDEX_NONE)
+	{
+		return InventorySlots[Existing].Count < MaxInventoryStackCount ? Existing : INDEX_NONE;
+	}
+	return InventorySlots.IndexOfByPredicate([](const FPFInventorySlot& Slot) { return Slot.IsEmpty(); });
+}
+
+// 구매 상태, 잔액, 인벤토리 공간 확인
+EPFShopPurchaseResult APFPlayerState::GetShopPurchaseResult(int32 ItemID) const
+{
+	const int32 Price = GetShopItemPrice(ItemID);
+	if (Price <= 0) return EPFShopPurchaseResult::InvalidItem;
+	const APFCharacter* Character = Cast<APFCharacter>(GetPawn());
+	if (!Character || !Character->IsPlayerCharacter()
+		|| !Character->IsPlayerControlled() || Character->GetPlayerState<APFPlayerState>() != this
+		|| !CanUseUIInput())
+	{
+		return EPFShopPurchaseResult::Unavailable;
+	}
+	if (AttributeSet->GetCoin() < Price)
+	{
+		return EPFShopPurchaseResult::InsufficientFunds;
+	}
+	return FindAvailableInventorySlot(ItemID) != INDEX_NONE ? EPFShopPurchaseResult::Success : EPFShopPurchaseResult::InventoryFull;
+}
+
+// 서버에 아이템 한 개 구매 요청
+void APFPlayerState::PurchaseShopItem(int32 ItemID)
+{
+	if (!CanUseUIInput()) return;
+	if (HasAuthority()) Server_PurchaseShopItem_Implementation(ItemID);
+	else Server_PurchaseShopItem(ItemID);
+}
+
+// 서버 가격 검증, 코인 차감, 아이템 지급
+void APFPlayerState::Server_PurchaseShopItem_Implementation(int32 ItemID)
+{
+	EPFShopPurchaseResult Result = GetShopPurchaseResult(ItemID);
+	if (Result == EPFShopPurchaseResult::Success)
+	{
+		const int32 SlotIndex = FindAvailableInventorySlot(ItemID);
+		if (!bGASStatsInitialized || !FPFGE_StatGameplayEffects::TryApplyCoinCost(AbilitySystemComponent, GetShopItemPrice(ItemID)))
+		{
+			Result = EPFShopPurchaseResult::Failed;
+		}
+		else
+		{
+			AddInventoryItemToSlot(SlotIndex, ItemID, 1);
+			OnRep_InventorySlots();
+			ForceNetUpdate();
+		}
+	}
+	Client_ShopPurchaseResult(ItemID, Result);
+}
+
+// 로컬 상점에 구매 결과 전달
+void APFPlayerState::Client_ShopPurchaseResult_Implementation(int32 ItemID, EPFShopPurchaseResult Result)
+{
+	OnShopPurchaseResult.Broadcast(ItemID, Result);
 }
 
 // 기존 묶음 또는 빈 슬롯에 아이템 추가
@@ -271,49 +441,28 @@ bool APFPlayerState::AddInventoryItemInternal(int32 ItemID, int32 Count)
 		return false;
 	}
 
-	InitializeInventorySlots();
-
-	// 같은 아이템 묶음에 수량 추가
-	for (FPFInventorySlot& Slot : InventorySlots)
+	const int32 SlotIndex = FindAvailableInventorySlot(ItemID);
+	if (SlotIndex == INDEX_NONE)
 	{
-		if (!Slot.IsEmpty() && Slot.ItemID == ItemID)
-		{
-			if (Slot.Count >= MaxInventoryStackCount)
-			{
-				return false;
-			}
-
-			const int32 AddableCount = FMath::Min(Count, MaxInventoryStackCount - Slot.Count);
-			if (AddableCount <= 0)
-			{
-				return false;
-			}
-
-			Slot.Count += AddableCount;
-			SanitizeQuickSlots();
-			OnRep_InventorySlots();
-			return true;
-		}
+		return false;
 	}
 
-	// 빈 슬롯에 새 아이템 등록
-	for (FPFInventorySlot& Slot : InventorySlots)
-	{
-		if (Slot.IsEmpty())
-		{
-			Slot = FPFInventorySlot(ItemID, FMath::Min(Count, MaxInventoryStackCount));
-			SanitizeQuickSlots();
-			OnRep_InventorySlots();
-			return true;
-		}
-	}
+	AddInventoryItemToSlot(SlotIndex, ItemID, Count);
+	return true;
+}
 
-	return false;
+// 검증된 슬롯에 수량 추가
+void APFPlayerState::AddInventoryItemToSlot(int32 SlotIndex, int32 ItemID, int32 Count)
+{
+	FPFInventorySlot& Slot = InventorySlots[SlotIndex];
+	const int32 CurrentCount = Slot.IsEmpty() ? 0 : Slot.Count;
+	Slot = FPFInventorySlot(ItemID, CurrentCount + FMath::Min(Count, MaxInventoryStackCount - CurrentCount));
 }
 
 // 인벤토리 아이템 사용 요청
 void APFPlayerState::UseInventoryItem(int32 SlotIndex, APFCharacter* Character)
 {
+	if (!CanUseUIInput()) return;
 	if (HasAuthority())
 	{
 		Server_UseInventoryItem_Implementation(SlotIndex, Character);
@@ -323,24 +472,34 @@ void APFPlayerState::UseInventoryItem(int32 SlotIndex, APFCharacter* Character)
 	Server_UseInventoryItem(SlotIndex, Character);
 }
 
+// 소유 플레이어의 아이템 사용 상태 확인
+bool APFPlayerState::IsInventoryUser(const APFCharacter* Character) const
+{
+	return IsValid(Character) && Character == GetPawn()
+		&& Character->IsPlayerCharacter() && Character->IsPlayerControlled()
+		&& Character->GetPlayerState<APFPlayerState>() == this && CanUseUIInput();
+}
+
+// 소유 컨트롤러의 공통 UI 조작 상태 확인
+bool APFPlayerState::CanUseUIInput() const
+{
+	const APFPlayerController* Player = Cast<APFPlayerController>(GetOwner());
+	return Player && Player->CanUseUIInput();
+}
+
 // 서버 아이템 사용, 수량 차감
 void APFPlayerState::Server_UseInventoryItem_Implementation(int32 SlotIndex, APFCharacter* Character)
 {
-	APFCharacter* CurrentPlayer = Cast<APFCharacter>(GetPawn());
-	if (!HasAuthority() || !IsValid(CurrentPlayer) || Character != CurrentPlayer
-		|| !CurrentPlayer->IsPlayerCharacter() || !CurrentPlayer->IsPlayerControlled()
-		|| CurrentPlayer->GetPlayerState<APFPlayerState>() != this || CurrentPlayer->IsDeadCharacter())
+	if (!IsInventoryUser(Character) || !InventorySlots.IsValidIndex(SlotIndex))
 	{
 		return;
 	}
+	UseInventoryItemInternal(SlotIndex, Character);
+}
 
-	InitializeInventorySlots();
-
-	if (!InventorySlots.IsValidIndex(SlotIndex) || !Character)
-	{
-		return;
-	}
-
+// 검증된 슬롯의 아이템 사용
+void APFPlayerState::UseInventoryItemInternal(int32 SlotIndex, APFCharacter* Character)
+{
 	FPFInventorySlot& Slot = InventorySlots[SlotIndex];
 	if (Slot.IsEmpty())
 	{
@@ -348,13 +507,14 @@ void APFPlayerState::Server_UseInventoryItem_Implementation(int32 SlotIndex, APF
 	}
 
 	const int32 UsedItemID = Slot.ItemID;
+	const FPFItemDefinition* Definition = APFItem::GetDefinition(UsedItemID);
 
 	if (GetItemCooldownRemaining(UsedItemID) > 0.f)
 	{
 		return;
 	}
 
-	if (!CanUseInventoryItem(UsedItemID))
+	if (!Definition || !CanUseInventoryItem(UsedItemID))
 	{
 		return;
 	}
@@ -367,22 +527,26 @@ void APFPlayerState::Server_UseInventoryItem_Implementation(int32 SlotIndex, APF
 
 	// 아이템 종류별 효과 적용
 	bool bItemEffectApplied = false;
+	FGameplayTag ItemUseCueTag;
 	switch (UsedItemID)
 	{
 	case etoi(APFItem::EITEM::ITEM_HPPOTION):
-		bItemEffectApplied = Character->GetHP(10.f);
+		bItemEffectApplied = Character->RestoreHealth(Definition->Amount);
+		ItemUseCueTag = PFGameplayTags::GameplayCue_Item_Use_HP;
 		break;
 
 	case etoi(APFItem::EITEM::ITEM_MPPOTION):
-		bItemEffectApplied = Character->GetMP(10.f);
+		bItemEffectApplied = Character->RestoreMana(Definition->Amount);
+		ItemUseCueTag = PFGameplayTags::GameplayCue_Item_Use_MP;
 		break;
 
 	case etoi(APFItem::EITEM::ITEM_SHIELD):
-		bItemEffectApplied = Character->GetShield();
+		bItemEffectApplied = Character->GrantShield();
 		break;
 
 	case etoi(APFItem::EITEM::ITEM_COIN):
-		bItemEffectApplied = Character->GetCoin(10.f);
+		bItemEffectApplied = Character->AddCoin(Definition->Amount);
+		ItemUseCueTag = PFGameplayTags::GameplayCue_Item_Use_Coin;
 		break;
 
 	default:
@@ -393,6 +557,12 @@ void APFPlayerState::Server_UseInventoryItem_Implementation(int32 SlotIndex, APF
 	{
 		AbilitySystemComponent->RemoveActiveGameplayEffect(CooldownHandle);
 		return;
+	}
+
+	// 사용에 성공한 아이템의 일회성 연출 재생
+	if (ItemUseCueTag.IsValid())
+	{
+		AbilitySystemComponent->ExecuteGameplayCue(ItemUseCueTag, AbilitySystemComponent->MakeEffectContext());
 	}
 
 	// 수량 차감, 소진 슬롯 정리
@@ -409,6 +579,7 @@ void APFPlayerState::Server_UseInventoryItem_Implementation(int32 SlotIndex, APF
 // 퀵슬롯 등록 요청
 void APFPlayerState::AssignQuickSlot(int32 QuickSlotIndex, int32 ItemID)
 {
+	if (!CanUseUIInput()) return;
 	if (HasAuthority())
 	{
 		Server_AssignQuickSlot_Implementation(QuickSlotIndex, ItemID);
@@ -421,21 +592,16 @@ void APFPlayerState::AssignQuickSlot(int32 QuickSlotIndex, int32 ItemID)
 // 서버 퀵슬롯 등록, 해제
 void APFPlayerState::Server_AssignQuickSlot_Implementation(int32 QuickSlotIndex, int32 ItemID)
 {
-	InitializeQuickSlots();
+	if (!CanUseUIInput()) return;
+	if (APFTutorialManager::Find(GetWorld()) && ItemID != RETURN_ERROR
+		&& ItemID != etoi(APFItem::ITEM_SHIELD) && ItemID != etoi(APFItem::ITEM_COIN)) return;
 
-	if (!QuickSlotItemIDs.IsValidIndex(QuickSlotIndex))
+	if (!QuickSlotItemIDs.IsValidIndex(QuickSlotIndex) || QuickSlotItemIDs[QuickSlotIndex] == ItemID)
 	{
 		return;
 	}
 
-	if (ItemID == RETURN_ERROR)
-	{
-		QuickSlotItemIDs[QuickSlotIndex] = RETURN_ERROR;
-		OnRep_QuickSlotItemIDs();
-		return;
-	}
-
-	if (FindInventorySlotIndexByItemID(ItemID) == INDEX_NONE)
+	if (ItemID != RETURN_ERROR && FindInventorySlotIndexByItemID(ItemID) == INDEX_NONE)
 	{
 		return;
 	}
@@ -447,6 +613,7 @@ void APFPlayerState::Server_AssignQuickSlot_Implementation(int32 QuickSlotIndex,
 // 퀵슬롯 사용 요청
 void APFPlayerState::UseQuickSlot(int32 QuickSlotIndex, APFCharacter* Character)
 {
+	if (!CanUseUIInput()) return;
 	if (HasAuthority())
 	{
 		Server_UseQuickSlot_Implementation(QuickSlotIndex, Character);
@@ -459,17 +626,7 @@ void APFPlayerState::UseQuickSlot(int32 QuickSlotIndex, APFCharacter* Character)
 // 퀵슬롯의 인벤토리 아이템 사용
 void APFPlayerState::Server_UseQuickSlot_Implementation(int32 QuickSlotIndex, APFCharacter* Character)
 {
-	APFCharacter* CurrentPlayer = Cast<APFCharacter>(GetPawn());
-	if (!HasAuthority() || !IsValid(CurrentPlayer) || Character != CurrentPlayer
-		|| !CurrentPlayer->IsPlayerCharacter() || !CurrentPlayer->IsPlayerControlled()
-		|| CurrentPlayer->GetPlayerState<APFPlayerState>() != this || CurrentPlayer->IsDeadCharacter())
-	{
-		return;
-	}
-
-	InitializeQuickSlots();
-
-	if (!QuickSlotItemIDs.IsValidIndex(QuickSlotIndex) || !Character)
+	if (!IsInventoryUser(Character) || !QuickSlotItemIDs.IsValidIndex(QuickSlotIndex))
 	{
 		return;
 	}
@@ -488,12 +645,13 @@ void APFPlayerState::Server_UseQuickSlot_Implementation(int32 QuickSlotIndex, AP
 		return;
 	}
 
-	Server_UseInventoryItem_Implementation(InventorySlotIndex, Character);
+	UseInventoryItemInternal(InventorySlotIndex, Character);
 }
 
 // 인벤토리 슬롯 이동 요청
 void APFPlayerState::MoveInventorySlot(int32 FromIndex, int32 ToIndex)
 {
+	if (!CanUseUIInput()) return;
 	if (HasAuthority())
 	{
 		Server_MoveInventorySlot_Implementation(FromIndex, ToIndex);
@@ -506,8 +664,7 @@ void APFPlayerState::MoveInventorySlot(int32 FromIndex, int32 ToIndex)
 // 서버 인벤토리 슬롯 교환
 void APFPlayerState::Server_MoveInventorySlot_Implementation(int32 FromIndex, int32 ToIndex)
 {
-	InitializeInventorySlots();
-
+	if (!CanUseUIInput()) return;
 	if (!InventorySlots.IsValidIndex(FromIndex) || !InventorySlots.IsValidIndex(ToIndex) || FromIndex == ToIndex)
 	{
 		return;
@@ -539,11 +696,6 @@ int32 APFPlayerState::FindInventorySlotIndexByItemID(int32 ItemID) const
 // 아이템 효과 적용 가능 여부 확인
 bool APFPlayerState::CanUseInventoryItem(int32 ItemID) const
 {
-	if (!AttributeSet)
-	{
-		return false;
-	}
-
 	switch (ItemID)
 	{
 	case etoi(APFItem::EITEM::ITEM_HPPOTION):
@@ -579,20 +731,15 @@ int32 APFPlayerState::GetInventoryItemCount(int32 ItemID) const
 // 아이템 효과의 남은 쿨타임 조회
 float APFPlayerState::GetItemCooldownRemaining(int32 ItemID) const
 {
-	if (!AbilitySystemComponent)
-	{
-		return 0.f;
-	}
-
-	const FGameplayTag CooldownTag = PFPlayerStatePrivate::GetItemCooldownTag(ItemID);
-	if (!CooldownTag.IsValid())
+	const FPFItemDefinition* Definition = APFItem::GetDefinition(ItemID);
+	if (!Definition || !Definition->CooldownTag.IsValid())
 	{
 		return 0.f;
 	}
 
 	// 쿨타임 태그의 활성 효과 조회
 	FGameplayTagContainer CooldownTags;
-	CooldownTags.AddTag(CooldownTag);
+	CooldownTags.AddTag(Definition->CooldownTag);
 	const FGameplayEffectQuery CooldownQuery = FGameplayEffectQuery::MakeQuery_MatchAnyOwningTags(CooldownTags);
 	const TArray<float> RemainingTimes = AbilitySystemComponent->GetActiveEffectsTimeRemaining(CooldownQuery);
 
@@ -608,35 +755,21 @@ float APFPlayerState::GetItemCooldownRemaining(int32 ItemID) const
 // 소진된 아이템의 퀵슬롯 연결 해제
 void APFPlayerState::SanitizeQuickSlots()
 {
-	InitializeQuickSlots();
-
-	bool bChanged = false;
 	for (int32& QuickSlotItemID : QuickSlotItemIDs)
 	{
 		if (QuickSlotItemID != RETURN_ERROR && FindInventorySlotIndexByItemID(QuickSlotItemID) == INDEX_NONE)
 		{
 			QuickSlotItemID = RETURN_ERROR;
-			bChanged = true;
 		}
-	}
-
-	if (bChanged)
-	{
-		OnRep_QuickSlotItemIDs();
 	}
 }
 
 // 아이템 쿨타임 시작
 FActiveGameplayEffectHandle APFPlayerState::StartItemCooldown(int32 ItemID)
 {
-	if (!HasAuthority() || !AbilitySystemComponent)
-	{
-		return FActiveGameplayEffectHandle();
-	}
-
-	const FGameplayTag CooldownTag = PFPlayerStatePrivate::GetItemCooldownTag(ItemID);
-	return FPFGE_StatGameplayEffects::ApplyItemCooldown(
-		AbilitySystemComponent, CooldownTag, ItemCooldownDuration);
+	const FPFItemDefinition* Definition = APFItem::GetDefinition(ItemID);
+	return Definition ? FPFGE_StatGameplayEffects::ApplyItemCooldown(
+		AbilitySystemComponent, Definition->CooldownTag, ItemCooldownDuration) : FActiveGameplayEffectHandle();
 }
 
 // 인벤토리 변경 알림
@@ -657,6 +790,9 @@ void APFPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLi
 
 	// 선택 캐릭터, 소지품 복제 등록
 	DOREPLIFETIME(APFPlayerState, CharacterType);
+	DOREPLIFETIME(APFPlayerState, bLobbyCharacterSelected);
+	DOREPLIFETIME(APFPlayerState, bLobbyReady);
+	DOREPLIFETIME(APFPlayerState, LobbySlot);
 	DOREPLIFETIME(APFPlayerState, InventorySlots);
 	DOREPLIFETIME(APFPlayerState, QuickSlotItemIDs);
 }

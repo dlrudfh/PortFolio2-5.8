@@ -27,20 +27,18 @@ protected:
 
 	virtual void WaitForEvent(AActor* AvatarActor) override;
 	virtual void ExecuteMontageGC(AActor* AvatarActor) override;
+	virtual UAnimMontage* GetAttackMontage(APFCharacter* Character) override;
 	virtual void ExecuteShootGC(int Var) const;
 
 	virtual bool TryShoot(APFTwinBlast* TwinBlast);
+	virtual bool PrepareNextCombo() override;
 	void StartShoot(APFTwinBlast* TwinBlast, const FVector& AimPoint);
 	virtual void EndAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo,
 		const FGameplayAbilityActivationInfo ActivationInfo, bool bReplicateEndAbility, bool bWasCancelled) override;
-	virtual void HandleAttackInputPressed() override;
 
 private:
 	UFUNCTION()
 	void OnShoot(FGameplayEventData Payload);
-	UFUNCTION()
-	void OnComboWindow(FGameplayEventData Payload);
-	void TryContinueCombo();
 
 
 protected:
@@ -51,8 +49,8 @@ protected:
 	FName RightMuzzleSocket = NAME_None;
 
 private:
-	// 발사, 콤보 이벤트 태그
+	// 발사 이벤트 태그
 	FGameplayTag ShootEventTag;
-	FGameplayTag ComboWindowEventTag;
 	bool bShotFired = false;
+	bool bCurrentShotLeft = true;
 };

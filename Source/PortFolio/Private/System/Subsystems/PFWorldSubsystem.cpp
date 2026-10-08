@@ -1,6 +1,8 @@
 #include "System/Subsystems/PFWorldSubsystem.h"
 
 #include "Projectile/Projectile.h"
+#include "Campaign/PFCampaignDirector.h"
+#include "EngineUtils.h"
 #include "GAS/Components/PFGameplayEffectTriggerComponent.h"
 #include "System/Framework/PFPoolable.h"
 #include "Kismet/GameplayStatics.h"
@@ -8,11 +10,6 @@
 // 액터의 풀 반환 이벤트 연결
 bool UPFWorldSubsystem::RegisterPoolableActor(AActor* Actor)
 {
-    if (!Actor)
-    {
-        return false;
-    }
-
     if (IPFPoolable* Poolable = Cast<IPFPoolable>(Actor))
     {
         Poolable->GetReturnDelegate().AddUObject(this, &UPFWorldSubsystem::ReleaseActor);
@@ -28,7 +25,6 @@ void UPFWorldSubsystem::PreparePool(TSubclassOf<AActor> PoolActor, int32 Count)
     if (!PoolActor) return;
 
     UWorld* World = GetWorld();
-    if (!World) return;
 
     TArray<AActor*>& Pool = PoolContainer.FindOrAdd(PoolActor);
 
@@ -64,14 +60,11 @@ AActor* UPFWorldSubsystem::SpawnActor(TSubclassOf<AActor> PoolActor, FVector con
     // 대기 액터 재사용 또는 추가 생성
     if (Pool.Num() > 0)
     {
-        PFLOG(Warning, TEXT("Found PoolActor"));
-        Actor = Pool.Pop();
-        Actor->SetActorLocation(Location);
-        Actor->SetActorRotation(Rotation);
+        Actor = Pool.Pop(EAllowShrinking::No);
+        Actor->SetActorLocationAndRotation(Location, Rotation);
     }
     else
     {
-        PFLOG(Warning, TEXT("Poolactor Doesn't Exist!"));
         const FTransform SpawnTransform(Rotation, Location);
         Actor = GetWorld()->SpawnActorDeferred<AActor>(
             PoolActor,
@@ -113,9 +106,35 @@ AActor* UPFWorldSubsystem::SpawnActor(TSubclassOf<AActor> PoolActor, FVector con
 // 반환된 액터를 풀에 보관
 void UPFWorldSubsystem::ReleaseActor(AActor* PoolActor)
 {
-    if (!PoolActor) return;
-
     PoolContainer.FindOrAdd(PoolActor->GetClass()).AddUnique(PoolActor);
+}
+
+// 월드 최초 조회 이후 캠페인 관리자 재사용
+APFCampaignDirector* UPFWorldSubsystem::GetCampaignDirector()
+{
+    if (!bCampaignDirectorLookupComplete)
+    {
+        bCampaignDirectorLookupComplete = true;
+        for (TActorIterator<APFCampaignDirector> It(GetWorld()); It; ++It)
+        {
+            CampaignDirector = *It;
+            break;
+        }
+    }
+    return CampaignDirector.Get();
+}
+
+// 새 캠페인 관리자 등록
+void UPFWorldSubsystem::RegisterCampaignDirector(APFCampaignDirector* Director)
+{
+    if (!CampaignDirector.IsValid()) CampaignDirector = Director;
+    bCampaignDirectorLookupComplete = true;
+}
+
+// 종료된 캠페인 관리자 해제
+void UPFWorldSubsystem::UnregisterCampaignDirector(APFCampaignDirector* Director)
+{
+    if (CampaignDirector.Get() == Director) CampaignDirector.Reset();
 }
 
 // 점프 금지 영역 등록
@@ -141,7 +160,7 @@ void UPFWorldSubsystem::GetJumpBlockRegions(TArray<FPFJumpBlockRegion>& OutRegio
             && Region->GetGenerateOverlapEvents() && Region->GrantsJumpBlock())
         {
             FPFJumpBlockRegion& Snapshot = OutRegions.AddDefaulted_GetRef();
-            Snapshot.Transform = Region->GetComponentTransform();
+            Snapshot.WorldToLocal = Region->GetComponentTransform().ToInverseMatrixWithScale();
             Snapshot.Extent = Region->GetUnscaledBoxExtent();
         }
     }

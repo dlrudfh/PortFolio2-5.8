@@ -49,7 +49,9 @@ private:
 	void AttackStart();
 	UFUNCTION()
 	void AttackEnd();
+	bool UpdateSwordCollision();
 	void ProcessSwordHits();
+	void UpdateSwordTrailAttachment();
 	virtual void OnMontageEnd(UAnimMontage* Montage, bool bInterrupted) override;
 	virtual void PostHitProcessing() override;
 
@@ -57,10 +59,9 @@ private:
 	// 검 궤적 이펙트
 	UParticleSystemComponent* SwordTrail;
 	bool bSwordHitDetectionActive;
-	// 이전 프레임의 검 위치
-	FVector PreviousSwordBaseLocation;
-	FVector PreviousSwordTipLocation;
+	FVector SwordCollisionCenter = FVector::ZeroVector;
+	FVector SwordCollisionExtent = FVector::ZeroVector;
+	FQuat SwordCollisionRotation = FQuat::Identity;
 	// 공격 중 중복 피격 방지
 	TSet<AActor*> HitActorsDuringAttack;
-	const float SwordTraceRadius = 12.f;
 };

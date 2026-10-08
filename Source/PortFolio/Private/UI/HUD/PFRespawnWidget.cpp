@@ -9,7 +9,7 @@ void UPFRespawnWidget::NativeConstruct()
 	Super::NativeConstruct();
 
 	RespawnProgressBar = Cast<UProgressBar>(GetWidgetFromName(TEXT("RespawnGauge")));
-	PFCHECK(RespawnProgressBar);
+	checkf(RespawnProgressBar, TEXT("RespawnGauge is required"));
 	UpdateCountdown();
 }
 
@@ -18,10 +18,7 @@ void UPFRespawnWidget::StartCountdown(double InRespawnEndServerTime, float InRes
 {
 	RespawnEndServerTime = InRespawnEndServerTime;
 	RespawnDuration = InRespawnDuration;
-	if (RespawnProgressBar)
-	{
-		RespawnProgressBar->SetPercent(1.f);
-	}
+	RespawnProgressBar->SetPercent(1.f);
 	SetVisibility(ESlateVisibility::HitTestInvisible);
 	UpdateCountdown();
 }
@@ -43,7 +40,7 @@ void UPFRespawnWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime
 // 서버 시각에 맞춰 남은 시간 비율 갱신
 void UPFRespawnWidget::UpdateCountdown()
 {
-	if (!RespawnProgressBar || RespawnDuration <= 0.f)
+	if (RespawnDuration <= 0.f)
 	{
 		return;
 	}

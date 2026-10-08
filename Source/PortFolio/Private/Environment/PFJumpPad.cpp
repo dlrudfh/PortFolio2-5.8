@@ -46,7 +46,6 @@ void APFJumpPad::BeginPlay()
 void APFJumpPad::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
-	if (GetNetMode() == NM_Client) return;
 	TArray<AActor*> OverlappingActors;
 	Trigger->GetOverlappingActors(OverlappingActors, APFCharacter::StaticClass());
 	for (AActor* OverlappingActor : OverlappingActors)
@@ -59,12 +58,12 @@ void APFJumpPad::Tick(float DeltaTime)
 // 착지점과 중력에 맞춘 발사 속도 계산
 void APFJumpPad::TryLaunch(APFCharacter* OtherCharacter)
 {
-	if (!IsValid(OtherCharacter) || GetNetMode() == NM_Client || !OtherCharacter->HasAuthority()
+	if (!IsValid(OtherCharacter)
 		|| !OtherCharacter->IsPlayerCharacter() || OtherCharacter->IsDeadCharacter()
 		|| OtherCharacter->IsLevelStartActive() || OtherCharacter->IsJumpPadFlightActive()
 		|| LaunchedCharacters.Contains(OtherCharacter)) return;
 	UCharacterMovementComponent* Movement = OtherCharacter->GetCharacterMovement();
-	if (!Movement || !Movement->IsMovingOnGround()) return;
+	if (!Movement->IsMovingOnGround()) return;
 	const float Gravity = -Movement->GetGravityZ();
 	const APhysicsVolume* Volume = Movement->GetPhysicsVolume();
 	const float TerminalSpeed = Volume ? Volume->TerminalVelocity : 4000.f;

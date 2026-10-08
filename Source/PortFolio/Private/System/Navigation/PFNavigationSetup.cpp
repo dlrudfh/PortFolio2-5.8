@@ -58,15 +58,11 @@ void APFNavigationSetup::PrepareStaticNavigation()
 	{
 		NavigationBounds += It->GetComponentsBoundingBox(true);
 	}
-	TArray<ARecastNavMesh*> NavMeshes;
 	FNavAgentProperties AgentProperties = Movement->GetNavAgentPropertiesRef();
 	AgentProperties.AgentRadius = Radius;
 	AgentProperties.AgentHeight = HalfHeight * 2.f;
-	if (ARecastNavMesh* NavMesh = Cast<ARecastNavMesh>(Navigation->GetNavDataForProps(AgentProperties)))
-	{
-		NavMeshes.Add(NavMesh);
-	}
-	if (!NavigationBounds.IsValid || NavMeshes.IsEmpty())
+	ARecastNavMesh* NavMesh = Cast<ARecastNavMesh>(Navigation->GetNavDataForProps(AgentProperties));
+	if (!NavigationBounds.IsValid || !NavMesh)
 	{
 		PreparationResult = TEXT("Place NavMeshBoundsVolume and create RecastNavMesh first.");
 		return;
@@ -102,42 +98,33 @@ void APFNavigationSetup::PrepareStaticNavigation()
 		}
 	}
 
-	for (ARecastNavMesh* NavMesh : NavMeshes)
+	NavMesh->Modify();
+	RuntimeProperty->GetUnderlyingProperty()->SetIntPropertyValue(
+		RuntimeProperty->ContainerPtrToValuePtr<void>(NavMesh), static_cast<int64>(ERuntimeGenerationType::Dynamic));
+	auto& JumpConfigs = *JumpConfigsProperty->ContainerPtrToValuePtr<TArray<FNavLinkGenerationJumpConfig>>(NavMesh);
+	for (FNavLinkGenerationJumpConfig& Previous : JumpConfigs)
 	{
-		NavMesh->Modify();
-		RuntimeProperty->GetUnderlyingProperty()->SetIntPropertyValue(
-			RuntimeProperty->ContainerPtrToValuePtr<void>(NavMesh), static_cast<int64>(ERuntimeGenerationType::Dynamic));
-		auto& JumpConfigs = *JumpConfigsProperty->ContainerPtrToValuePtr<TArray<FNavLinkGenerationJumpConfig>>(NavMesh);
-		for (FNavLinkGenerationJumpConfig& Previous : JumpConfigs)
+		if (Previous.LinkProxy && Previous.bLinkProxyRegistered)
 		{
-			if (Navigation && Previous.LinkProxy && Previous.bLinkProxyRegistered)
-			{
-				Navigation->UnregisterCustomLink(*Previous.LinkProxy);
-			}
+			Navigation->UnregisterCustomLink(*Previous.LinkProxy);
 		}
-		FNavDataConfig AgentConfig = NavMesh->GetConfig();
-		AgentConfig.AgentRadius = Radius;
-		AgentConfig.AgentHeight = HalfHeight * 2.f;
-		NavMesh->SetConfig(AgentConfig);
-		NavMesh->bGenerateNavLinks = false;
-		NavMesh->bAllowNavLinkAsPathEnd = false;
-		JumpConfigs.Reset();
-		NavMesh->MarkPackageDirty();
 	}
+	FNavDataConfig AgentConfig = NavMesh->GetConfig();
+	AgentConfig.AgentRadius = Radius;
+	AgentConfig.AgentHeight = HalfHeight * 2.f;
+	NavMesh->SetConfig(AgentConfig);
+	NavMesh->bGenerateNavLinks = false;
+	NavMesh->bAllowNavLinkAsPathEnd = false;
+	JumpConfigs.Reset();
+	NavMesh->MarkPackageDirty();
 
 	ApplyNavigationQuerySettings();
 	Navigation->Build();
 	PreparationResult.Reset();
-	for (ARecastNavMesh* NavMesh : NavMeshes)
+	if (!PFNavigationLinkBuilder::Build(*World, *NavMesh, *Bot, GetLevel(), GetActorGuid(), PreparationResult))
 	{
-		FString Result;
-		if (!PFNavigationLinkBuilder::Build(*World, *NavMesh, *Bot, GetLevel(), GetActorGuid(), Result))
-		{
-			PreparationResult = Result;
-			UE_LOG(LogTemp, Warning, TEXT("%s"), *PreparationResult);
-			return;
-		}
-		PreparationResult += Result;
+		UE_LOG(LogTemp, Warning, TEXT("%s"), *PreparationResult);
+		return;
 	}
 	Navigation->Build();
 	PreparationResult += FString::Printf(TEXT(" Excluded %d physics meshes."), ObstacleCount);

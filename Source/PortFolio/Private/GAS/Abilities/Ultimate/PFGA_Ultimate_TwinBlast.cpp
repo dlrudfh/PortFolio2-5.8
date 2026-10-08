@@ -1,6 +1,8 @@
 #include "GAS/Abilities/Ultimate/PFGA_Ultimate_TwinBlast.h"
+#include "GAS/PFGameplayTags.h"
 
 #include "Character/TwinBlast/PFTwinBlast.h"
+#include "Campaign/PFCampaignDirector.h"
 #include "GameFramework/CharacterMovementComponent.h"
 
 UPFGA_Ultimate_TwinBlast::UPFGA_Ultimate_TwinBlast()
@@ -9,13 +11,13 @@ UPFGA_Ultimate_TwinBlast::UPFGA_Ultimate_TwinBlast()
 	NetExecutionPolicy = EGameplayAbilityNetExecutionPolicy::ServerOnly;
 
 	FGameplayTagContainer AssetTags;
-	AssetTags.AddTag(FGameplayTag::RequestGameplayTag(FName("Character.Ability.Ultimate.Twinblast")));
+	AssetTags.AddTag(PFGameplayTags::Character_Ability_Ultimate_Twinblast);
 	SetAssetTags(AssetTags);
 
-	ActivationBlockedTags.AddTag(FGameplayTag::RequestGameplayTag(FName("Character.Block.Ultimate")));
-	ActivationBlockedTags.AddTag(FGameplayTag::RequestGameplayTag(FName("Character.State.Dead")));
-	ActivationBlockedTags.AddTag(FGameplayTag::RequestGameplayTag(FName("Character.State.Jumping")));
-	ActivationBlockedTags.AddTag(FGameplayTag::RequestGameplayTag(FName("Character.State.Falling")));
+	ActivationBlockedTags.AddTag(PFGameplayTags::Character_Block_Ultimate);
+	ActivationBlockedTags.AddTag(PFGameplayTags::Character_State_Dead);
+	ActivationBlockedTags.AddTag(PFGameplayTags::Character_State_Jumping);
+	ActivationBlockedTags.AddTag(PFGameplayTags::Character_State_Falling);
 }
 
 bool UPFGA_Ultimate_TwinBlast::CanActivateAbility(
@@ -30,14 +32,10 @@ bool UPFGA_Ultimate_TwinBlast::CanActivateAbility(
 		return false;
 	}
 
-	const APFTwinBlast* TwinBlast = ActorInfo
-		? Cast<APFTwinBlast>(ActorInfo->AvatarActor.Get())
-		: nullptr;
-	const UCharacterMovementComponent* CharacterMovementComponent = TwinBlast
-		? TwinBlast->GetCharacterMovement()
-		: nullptr;
-	return TwinBlast && TwinBlast->IsPlayerCharacter() && !TwinBlast->IsJumpPadFlightActive()
-		&& CharacterMovementComponent && !CharacterMovementComponent->IsFalling();
+	const APFTwinBlast* TwinBlast = Cast<APFTwinBlast>(ActorInfo->AvatarActor.Get());
+	return TwinBlast && !APFCampaignDirector::BlocksInput(TwinBlast->GetController())
+		&& TwinBlast->IsPlayerCharacter() && !TwinBlast->IsJumpPadFlightActive()
+		&& !TwinBlast->GetCharacterMovement()->IsFalling();
 }
 
 void UPFGA_Ultimate_TwinBlast::ActivateAbility(
@@ -51,7 +49,7 @@ void UPFGA_Ultimate_TwinBlast::ActivateAbility(
 	APFTwinBlast* TwinBlast = ActorInfo
 		? Cast<APFTwinBlast>(ActorInfo->AvatarActor.Get())
 		: nullptr;
-	if (!TwinBlast || !TwinBlast->IsPlayerCharacter() || !TwinBlast->HasAuthority())
+	if (!TwinBlast || !TwinBlast->IsPlayerCharacter())
 	{
 		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
 		return;

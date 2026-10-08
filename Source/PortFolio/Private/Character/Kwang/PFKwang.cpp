@@ -1,20 +1,31 @@
 ﻿
 
 #include "Character/Kwang/PFKwang.h"
+#include "System/Subsystems/PFGameInstanceSubsystem.h"
+#include "Campaign/PFCampaignEnemyController.h"
 #include "Animation/PFAnimInst_Kwang.h"
 #include "GAS/Abilities/Attack/PFGA_Attack_Kwang.h"
 #include "GAS/PFGameplayTags.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "Particles/ParticleSystemComponent.h"
 #include "Engine/World.h"
+#include "Engine/OverlapResult.h"
 
 APFKwang::APFKwang() : SwordTrail(nullptr), bSwordHitDetectionActive(false)
 {
 	AttackAbilityClass = UPFGA_Attack_Kwang::StaticClass();
+	AttackDamageMultiplier = 3.5f;
+	IncomingDamageMultiplier = 0.5f;
+	WalkSpeed = 500.f;
+	SprintSpeed = 1000.f;
 	AISettings.DesiredCombatDistance = 150.f;
 	AISettings.DistanceTolerance = 0.f;
 	AISettings.AttackRange = 200.f;
 
 	SetMesh();
+	static ConstructorHelpers::FObjectFinder<USkeletalMesh> ARMS(TEXT("/Game/GameData/Characters/FirstPerson/SK_Kwang_Arms.SK_Kwang_Arms"));
+	FirstPersonMeshAsset = ARMS.Object;
+	FirstPersonNeckOffset = FVector(-8.f, -8.f, -20.f);
 	SetParticle();
 	SetSound();
 }
@@ -22,8 +33,9 @@ APFKwang::APFKwang() : SwordTrail(nullptr), bSwordHitDetectionActive(false)
 void APFKwang::PostInitializeComponents()
 {
 	PFAnim = Cast<UPFAnimInst_Kwang>(GetMesh()->GetAnimInstance());
-	PFCHECK(nullptr != PFAnim);
+	checkf(PFAnim, TEXT("Kwang AnimInstance is required"));
 	Super::PostInitializeComponents();
+	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
 	// 검 판정 이벤트 연결
 	Cast<UPFAnimInst_Kwang>(PFAnim)->AttackStart.AddUObject(this, &APFKwang::AttackStart);
 	Cast<UPFAnimInst_Kwang>(PFAnim)->AttackEnd.AddUObject(this, &APFKwang::AttackEnd);
@@ -34,8 +46,9 @@ void APFKwang::PostInitializeComponents()
 void APFKwang::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+	UpdateSwordTrailAttachment();
 
-	if (HasAuthority() && bSwordHitDetectionActive)
+	if (HasAuthority() && bSwordHitDetectionActive && UpdateSwordCollision())
 	{
 		ProcessSwordHits();
 	}
@@ -43,57 +56,28 @@ void APFKwang::Tick(float DeltaTime)
 
 void APFKwang::SetMesh()
 {
-	// 광 메시 설정
-	static ConstructorHelpers::FObjectFinder<USkeletalMesh> KWANG(TEXT("/Game/ParagonKwang/Characters/Heroes/Kwang/Meshes/Kwang_GDC.Kwang_GDC"));
-	if (KWANG.Succeeded())
-	{
-		GetMesh()->SetSkeletalMesh(KWANG.Object);
-	}
-
-	// 광 애니메이션 연결
-	GetMesh()->SetAnimationMode(EAnimationMode::AnimationBlueprint);
-
-	static ConstructorHelpers::FClassFinder<UPFAnimInst_Kwang> PORTFOLIO_BLUEPRINT(TEXT("/Game/ParagonKwang/Characters/Heroes/Kwang/Kwang_Blueprint.Kwang_Blueprint_C"));
-
-	if (PORTFOLIO_BLUEPRINT.Succeeded())
-	{
-		PFLOG(Warning, TEXT("BluePrint Succeed"));
-		GetMesh()->SetAnimInstanceClass(PORTFOLIO_BLUEPRINT.Class);
-	}
-	else
-	{
-		PFLOG(Warning, TEXT("BluePrint Failed"));
-	}
+	UPFGameInstanceSubsystem::ApplyCharacterMesh(GetMesh(), CHARACTER_KWANG, false);
 }
 
 void APFKwang::SetParticle()
 {
-	// 검 궤적 이펙트 로드
-	Particles.SetNum(etoi(PARTICLE_END));
-
-	Particles[etoi(SWORDTRAIL)] = LoadObject<UParticleSystem>(nullptr, TEXT("ParticleSystem'/Game/ParagonKwang/FX/Particles/"
-		"Abilities/Primary/FX/P_Kwang_Primary_Trail.P_Kwang_Primary_Trail'"));
-	if (!Particles[etoi(SWORDTRAIL)])
+	static const TCHAR* const Paths[] =
 	{
-		PFLOG(Warning, TEXT("SwordTrail Failed"));
-	}
+		TEXT("ParticleSystem'/Game/ParagonKwang/FX/Particles/Abilities/Primary/FX/P_Kwang_Primary_Trail.P_Kwang_Primary_Trail'")
+	};
+	static_assert(UE_ARRAY_COUNT(Paths) == etoi(PARTICLE_END));
+	UPFGameInstanceSubsystem::LoadAssets(Particles, Paths);
 }
 
 void APFKwang::SetSound()
 {
-	// 검 공격, 피격 사운드 로드
-	Sounds.SetNum(etoi(SOUND_END));
-
-	Sounds[etoi(SLASH)] = LoadObject<USoundBase>(nullptr, TEXT("SoundCue'/Game/Free_Sounds_Pack/wav/Whoosh_1-1.Whoosh_1-1'"));
-	if (!Sounds[etoi(SLASH)])
+	static const TCHAR* const Paths[] =
 	{
-		PFLOG(Warning, TEXT("SlashSound Failed"));
-	}
-	Sounds[etoi(HIT)] = LoadObject<USoundBase>(nullptr, TEXT("SoundCue'/Game/Free_Sounds_Pack/wav/Hit_Generic_2-1.Hit_Generic_2-1'"));
-	if (!Sounds[etoi(HIT)])
-	{
-		PFLOG(Warning, TEXT("HitSound Failed"));
-	}
+		TEXT("SoundCue'/Game/Free_Sounds_Pack/wav/Whoosh_1-1.Whoosh_1-1'"),
+		TEXT("SoundCue'/Game/Free_Sounds_Pack/wav/Hit_Generic_2-1.Hit_Generic_2-1'")
+	};
+	static_assert(UE_ARRAY_COUNT(Paths) == etoi(SOUND_END));
+	UPFGameInstanceSubsystem::LoadAssets(Sounds, Paths);
 }
 
 // 공격 Cue의 콤보 몽타주 재생
@@ -101,7 +85,7 @@ void APFKwang::GameplayCue_Character_Attack_Kwang_Normal_Montage(
 	EGameplayCueEvent::Type EventType,
 	const FGameplayCueParameters& Parameters)
 {
-	if (EventType != EGameplayCueEvent::Executed || !PFAnim)
+	if (EventType != EGameplayCueEvent::Executed)
 	{
 		return;
 	}
@@ -118,18 +102,16 @@ void APFKwang::GameplayCue_Character_Attack_Kwang_Normal_Montage(
 // 검 판정, 공격 연출 시작
 void APFKwang::AttackStart()
 {
-	// 피격 기록, 검 위치 초기화
 	bSwordHitDetectionActive = true;
-	HitActorsDuringAttack.Empty();
-	PreviousSwordBaseLocation = GetMesh()->GetSocketLocation(FName("FX_weapon_base"));
-	PreviousSwordTipLocation = GetMesh()->GetSocketLocation(FName("FX_weapon_tip"));
+	HitActorsDuringAttack.Reset();
+	if (GetNetMode() == NM_DedicatedServer) return;
 
 	// 검 궤적 준비, 재생
 	if (IsValid(SwordTrail))
 	{
 		SwordTrail->EndTrails();
 	}
-	else if (Particles.IsValidIndex(etoi(SWORDTRAIL)) && Particles[etoi(SWORDTRAIL)] && GetWorld())
+	else if (Particles[etoi(SWORDTRAIL)])
 	{
 		SwordTrail = NewObject<UParticleSystemComponent>(GetMesh());
 		SwordTrail->bAutoDestroy = false;
@@ -137,17 +119,22 @@ void APFKwang::AttackStart()
 		SwordTrail->SecondsBeforeInactive = 0.f;
 		SwordTrail->bAutoActivate = false;
 		SwordTrail->bOverrideLODMethod = false;
-		SwordTrail->bAutoManageAttachment = true;
-		SwordTrail->SetAutoAttachParams(GetMesh(), NAME_None);
+		SwordTrail->bAutoManageAttachment = false;
 		SwordTrail->SetTemplate(Particles[etoi(SWORDTRAIL)]);
 		SwordTrail->RegisterComponentWithWorld(GetWorld());
-		SwordTrail->AttachToComponent(GetMesh(), FAttachmentTransformRules::KeepRelativeTransform);
 	}
 
 	if (IsValid(SwordTrail))
 	{
 		SwordTrail->CustomTimeDilation = 0.7f;
-		SwordTrail->BeginTrails(FName("FX_weapon_base"), FName("FX_weapon_tip"), ETrailWidthMode_FromCentre, 2.f);
+		if (SwordTrail->GetAttachParent() != GetPresentationMesh())
+		{
+			UpdateSwordTrailAttachment();
+		}
+		else
+		{
+			SwordTrail->BeginTrails(FName("FX_weapon_base"), FName("FX_weapon_tip"), ETrailWidthMode_FromCentre, 2.f);
+		}
 	}
 	else
 	{
@@ -157,11 +144,29 @@ void APFKwang::AttackStart()
 	UGameplayStatics::PlaySound2D(this, Sounds[etoi(SLASH)]);
 }
 
+// 표시 메시 변경 시 검 궤적 재연결
+void APFKwang::UpdateSwordTrailAttachment()
+{
+	if (!IsValid(SwordTrail)) return;
+	USkeletalMeshComponent* PresentationMesh = GetPresentationMesh();
+	SwordTrail->SetVisibility(PresentationMesh->IsVisible());
+	if (SwordTrail->GetAttachParent() == PresentationMesh) return;
+	SwordTrail->EndTrails();
+	SwordTrail->DeactivateImmediate();
+	SwordTrail->AttachToComponent(PresentationMesh, FAttachmentTransformRules::SnapToTargetIncludingScale);
+	SwordTrail->SetOnlyOwnerSee(IsFirstPersonPresentationActive());
+	SwordTrail->SetFirstPersonPrimitiveType(IsFirstPersonPresentationActive() ? EFirstPersonPrimitiveType::FirstPerson : EFirstPersonPrimitiveType::None);
+	if (bSwordHitDetectionActive)
+	{
+		SwordTrail->BeginTrails(TEXT("FX_weapon_base"), TEXT("FX_weapon_tip"), ETrailWidthMode_FromCentre, 2.f);
+	}
+}
+
 // 검 판정, 궤적 종료
 void APFKwang::AttackEnd()
 {
 	bSwordHitDetectionActive = false;
-	HitActorsDuringAttack.Empty();
+	HitActorsDuringAttack.Reset();
 
 	if (IsValid(SwordTrail))
 	{
@@ -169,53 +174,45 @@ void APFKwang::AttackEnd()
 	}
 }
 
-// 검 궤적의 피격 대상 처리
+// 칼자루, 칼끝을 포함한 검 OBB 갱신
+bool APFKwang::UpdateSwordCollision()
+{
+	const FTransform BaseTransform = GetMesh()->GetSocketTransform(TEXT("FX_weapon_base"));
+	const FVector SwordBase = BaseTransform.GetLocation();
+	const FVector SwordSegment = GetMesh()->GetSocketLocation(TEXT("FX_weapon_tip")) - SwordBase;
+	const float BladeLength = SwordSegment.Size();
+	if (BladeLength <= KINDA_SMALL_NUMBER) return false;
+
+	const FVector SwordDirection = SwordSegment / BladeLength;
+	const float SwordScale = BaseTransform.GetScale3D().GetAbsMax();
+	const float HiltPadding = 60.f * SwordScale;
+	const float TipPadding = 20.f * SwordScale;
+	SwordCollisionCenter = SwordBase + SwordDirection * ((BladeLength + TipPadding - HiltPadding) * 0.5f);
+	SwordCollisionExtent = FVector((BladeLength + HiltPadding + TipPadding) * 0.5f,
+		25.f * SwordScale, 20.f * SwordScale);
+	SwordCollisionRotation = FRotationMatrix::MakeFromXZ(SwordDirection, BaseTransform.GetUnitAxis(EAxis::Z)).ToQuat();
+	return true;
+}
+
+// 검 OBB의 피격 대상 처리
 void APFKwang::ProcessSwordHits()
 {
-	UWorld* World = GetWorld();
-	if (!World || !GetMesh())
-	{
-		return;
-	}
-
-	// 이전, 현재 검 위치 계산
-	const FVector CurrentSwordBaseLocation = GetMesh()->GetSocketLocation(FName("FX_weapon_base"));
-	const FVector CurrentSwordTipLocation = GetMesh()->GetSocketLocation(FName("FX_weapon_tip"));
-	const FVector PreviousSwordMiddleLocation = (PreviousSwordBaseLocation + PreviousSwordTipLocation) * 0.5f;
-	const FVector CurrentSwordMiddleLocation = (CurrentSwordBaseLocation + CurrentSwordTipLocation) * 0.5f;
+	if (const APFCampaignEnemyController* CampaignAI = Cast<APFCampaignEnemyController>(GetController());
+		CampaignAI && CampaignAI->IsBossPatternActive()) return;
 
 	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(KwangSwordAttack), false, this);
-	QueryParams.AddIgnoredActor(this);
-
-	ECollisionChannel PFCharacterCollisionChannel;
-	if (!GetCollisionChannel(PFCollisionChannelNames::PFCharacter, PFCharacterCollisionChannel))
-	{
-		return;
-	}
-
+	static const ECollisionChannel PFCharacterCollisionChannel = GetCollisionChannel(PFCollisionChannelNames::PFCharacter);
 	FCollisionObjectQueryParams ObjectQueryParams;
 	ObjectQueryParams.AddObjectTypesToQuery(PFCharacterCollisionChannel);
 
-	// 검의 이동 구간, 길이를 스윕 검사
-	TArray<FHitResult> HitResults;
-	const FCollisionShape SwordShape = FCollisionShape::MakeSphere(SwordTraceRadius);
-
-	auto AppendSweepHits = [&](const FVector& Start, const FVector& End)
-	{
-		TArray<FHitResult> SweepHits;
-		World->SweepMultiByObjectType(SweepHits, Start, End, FQuat::Identity, ObjectQueryParams, SwordShape, QueryParams);
-		HitResults.Append(SweepHits);
-	};
-
-	AppendSweepHits(PreviousSwordBaseLocation, CurrentSwordBaseLocation);
-	AppendSweepHits(PreviousSwordMiddleLocation, CurrentSwordMiddleLocation);
-	AppendSweepHits(PreviousSwordTipLocation, CurrentSwordTipLocation);
-	AppendSweepHits(CurrentSwordBaseLocation, CurrentSwordTipLocation);
+	TArray<FOverlapResult> Overlaps;
+	GetWorld()->OverlapMultiByObjectType(Overlaps, SwordCollisionCenter, SwordCollisionRotation,
+		ObjectQueryParams, FCollisionShape::MakeBox(SwordCollisionExtent), QueryParams);
 
 	// 대상별 한 번씩 피해 적용
-	for (const FHitResult& HitResult : HitResults)
+	for (const FOverlapResult& Overlap : Overlaps)
 	{
-		APFCharacter* HitCharacter = Cast<APFCharacter>(HitResult.GetActor());
+		APFCharacter* HitCharacter = Cast<APFCharacter>(Overlap.GetActor());
 		if (!IsValid(HitCharacter) || HitCharacter == this || HitActorsDuringAttack.Contains(HitCharacter))
 		{
 			continue;
@@ -227,12 +224,12 @@ void APFKwang::ProcessSwordHits()
 			continue;
 		}
 
+		const FVector HitLocation = HitCharacter->GetActorLocation();
+		const FHitResult HitResult(HitCharacter, Overlap.GetComponent(), HitLocation,
+			(HitLocation - SwordCollisionCenter).GetSafeNormal());
 		HitActorsDuringAttack.Add(HitCharacter);
 		ApplyAttackDamageTo(HitCharacter, GetDamage(), this, nullptr, &HitResult);
 	}
-
-	PreviousSwordBaseLocation = CurrentSwordBaseLocation;
-	PreviousSwordTipLocation = CurrentSwordTipLocation;
 }
 
 void APFKwang::OnMontageEnd(UAnimMontage* Montage, bool bInterrupted)

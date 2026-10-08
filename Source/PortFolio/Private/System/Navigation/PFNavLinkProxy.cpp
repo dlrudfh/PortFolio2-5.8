@@ -81,7 +81,7 @@ namespace
 			CapsuleBounds.Min.Z -= FloorTolerance;
 			for (const FPFJumpBlockRegion& Region : BlockRegions)
 			{
-				if (CapsuleBounds.TransformBy(Region.Transform.ToInverseMatrixWithScale()).Intersect(FBox(-Region.Extent, Region.Extent)))
+				if (CapsuleBounds.TransformBy(Region.WorldToLocal).Intersect(FBox(-Region.Extent, Region.Extent)))
 				{
 					return true;
 				}

@@ -3,10 +3,14 @@
 #include "Character/PFCharacter.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/MeshComponent.h"
+#include "Engine/OverlapInfo.h"
+#include "Engine/AssetManager.h"
+#include "Engine/StreamableManager.h"
 #include "Engine/World.h"
 #include "GAS/PFGameplayTags.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Net/UnrealNetwork.h"
+#include "PSOPrecacheMaterial.h"
 #include "System/Framework/PFEnemyAIController.h"
 
 UPFShrubStealthComponent::UPFShrubStealthComponent()
@@ -29,6 +33,8 @@ void UPFShrubStealthComponent::BeginPlay()
 	UCapsuleComponent* Capsule = Character->GetCapsuleComponent();
 	Capsule->OnComponentBeginOverlap.AddDynamic(this, &UPFShrubStealthComponent::OnBeginOverlap);
 	Capsule->OnComponentEndOverlap.AddDynamic(this, &UPFShrubStealthComponent::OnEndOverlap);
+	if (GetNetMode() != NM_DedicatedServer && !MaterialLibrary.IsNull())
+		MaterialLoad = UAssetManager::GetStreamableManager().RequestAsyncLoad(MaterialLibrary.ToSoftObjectPath());
 	RefreshState();
 }
 
@@ -40,6 +46,9 @@ void UPFShrubStealthComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		Character->GetCapsuleComponent()->OnComponentEndOverlap.RemoveDynamic(this, &UPFShrubStealthComponent::OnEndOverlap);
 	}
 	RestorePresentation();
+	MaterialSlots.Reset();
+	if (MaterialLoad.IsValid()) MaterialLoad->CancelHandle();
+	MaterialLoad.Reset();
 	Super::EndPlay(EndPlayReason);
 }
 
@@ -58,11 +67,9 @@ void UPFShrubStealthComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProper
 // 겹친 수풀 컴포넌트 확인
 bool UPFShrubStealthComponent::IsInsideShrub() const
 {
-	if (!Character.IsValid()) return false;
-	TArray<UPrimitiveComponent*> Overlapping;
-	Character->GetCapsuleComponent()->GetOverlappingComponents(Overlapping);
-	for (const UPrimitiveComponent* Component : Overlapping)
+	for (const FOverlapInfo& Overlap : Character->GetCapsuleComponent()->GetOverlapInfos())
 	{
+		const UPrimitiveComponent* Component = Overlap.OverlapInfo.GetComponent();
 		if (IsValid(Component) && Component->ComponentHasTag(TEXT("PFShrubConcealment"))
 			&& Component->IsQueryCollisionEnabled())
 		{
@@ -76,7 +83,11 @@ bool UPFShrubStealthComponent::IsInsideShrub() const
 void UPFShrubStealthComponent::BreakForAttack()
 {
 	if (!Character.IsValid() || !Character->HasAuthority()) return;
-	if (bConcealed)
+	const bool bWasConcealed = bConcealed;
+	bRevealedByAttack |= bWasConcealed;
+	bRequiresExit = IsInsideShrub();
+	SetConcealed(false);
+	if (bWasConcealed)
 	{
 		if (UWorld* World = GetWorld())
 		{
@@ -89,8 +100,6 @@ void UPFShrubStealthComponent::BreakForAttack()
 			}
 		}
 	}
-	bRequiresExit = IsInsideShrub();
-	SetConcealed(false);
 }
 
 // 서버 판정, 소유자 변경에 따른 표시 갱신
@@ -104,6 +113,7 @@ void UPFShrubStealthComponent::RefreshState()
 		if (!bInside)
 		{
 			bRequiresExit = false;
+			bRevealedByAttack = false;
 		}
 		else if (!bRequiresExit && Character->HasStateTag(PFGameplayTags::Character_State_Attacking))
 		{
@@ -112,6 +122,7 @@ void UPFShrubStealthComponent::RefreshState()
 		SetConcealed(bInside && !bRequiresExit);
 	}
 	RefreshPresentation();
+	SetComponentTickEnabled(Character->IsPlayerCharacter() || bConcealed);
 }
 
 // 은신 상태 복제 예약
@@ -119,6 +130,10 @@ void UPFShrubStealthComponent::SetConcealed(bool bNewConcealed)
 {
 	if (bConcealed == bNewConcealed) return;
 	bConcealed = bNewConcealed;
+	if (bConcealed)
+	{
+		bRevealedByAttack = false;
+	}
 	Character->ForceNetUpdate();
 	RefreshPresentation();
 }
@@ -126,7 +141,7 @@ void UPFShrubStealthComponent::SetConcealed(bool bNewConcealed)
 // 복제된 은신 표시 반영
 void UPFShrubStealthComponent::OnRep_Concealed()
 {
-	RefreshPresentation();
+	RefreshState();
 }
 
 // 수풀 진입 판정
@@ -149,7 +164,7 @@ void UPFShrubStealthComponent::RefreshPresentation()
 	if (!Character.IsValid() || GetNetMode() == NM_DedicatedServer) return;
 	const bool bActive = bConcealed && !Character->IsDeadCharacter();
 	const bool bLocal = Character->IsLocalPlayerCharacter();
-	if (!bActive)
+	if (!bActive && !bLocal)
 	{
 		RestorePresentation();
 		return;
@@ -163,14 +178,21 @@ void UPFShrubStealthComponent::RefreshPresentation()
 		TInlineComponentArray<UPrimitiveComponent*> AttachedComponents(Attached);
 		Components.Append(AttachedComponents);
 	}
+	if (bLocal)
+		for (UPrimitiveComponent* Component : Components)
+			if (UMeshComponent* Mesh = Cast<UMeshComponent>(Component)) PrepareLocalFade(Mesh);
+	if (!bActive)
+	{
+		RestorePresentation();
+		return;
+	}
 	for (UPrimitiveComponent* Component : Components)
 	{
 		if (bLocal)
 		{
 			if (UMeshComponent* Mesh = Cast<UMeshComponent>(Component); Mesh && !FadedMeshes.Contains(Mesh))
 			{
-				ApplyLocalFade(Mesh);
-				FadedMeshes.Add(Mesh);
+				if (ApplyLocalFade(Mesh)) FadedMeshes.Add(Mesh);
 			}
 		}
 		else if (!HiddenStates.Contains(Component))
@@ -181,14 +203,18 @@ void UPFShrubStealthComponent::RefreshPresentation()
 	}
 }
 
-// 소유자에게만 은신용 머티리얼 적용
-void UPFShrubStealthComponent::ApplyLocalFade(UMeshComponent* Mesh)
+// 은신 머티리얼 생성, 렌더링 파이프라인 준비
+void UPFShrubStealthComponent::PrepareLocalFade(UMeshComponent* Mesh)
 {
-	UPFShrubMaterialLibrary* Library = MaterialLibrary.LoadSynchronous();
+	UPFShrubMaterialLibrary* Library = MaterialLibrary.Get();
 	if (!Library) return;
 	for (int32 Index = 0; Index < Mesh->GetNumMaterials(); ++Index)
 	{
 		UMaterialInterface* Original = Mesh->GetMaterial(Index);
+		if (MaterialSlots.ContainsByPredicate([Mesh, Index, Original](const FPFConcealedMaterialSlot& Slot)
+		{
+			return Slot.Mesh.Get() == Mesh && Slot.Index == Index && (Slot.Original == Original || Slot.Faded == Original);
+		})) continue;
 		UMaterialInterface* Key = Original;
 		const TObjectPtr<UMaterialInterface>* Variant = Library->MaterialVariants.Find(Key);
 		while (!Variant)
@@ -207,8 +233,46 @@ void UPFShrubStealthComponent::ApplyLocalFade(UMeshComponent* Mesh)
 		Slot.Index = Index;
 		Slot.Original = Original;
 		Slot.Faded = Faded;
-		Mesh->SetMaterial(Index, Faded);
+		PrecachedMeshes.Remove(Mesh);
 	}
+#if UE_WITH_PSO_PRECACHING
+	if (!PrecachedMeshes.Contains(Mesh) && MaterialSlots.ContainsByPredicate([Mesh](const FPFConcealedMaterialSlot& Slot)
+	{
+		return Slot.Mesh.Get() == Mesh;
+	}))
+	{
+		FPSOPrecacheParams Params;
+		Mesh->SetupPrecachePSOParams(Params);
+		FMaterialInterfacePSOPrecacheParamsList PrecacheData;
+		Mesh->CollectPSOPrecacheData(Params, PrecacheData);
+		if (PrecacheData.IsEmpty()) return;
+		for (FMaterialInterfacePSOPrecacheParams& Entry : PrecacheData)
+			for (const FPFConcealedMaterialSlot& Slot : MaterialSlots)
+				if (Slot.Mesh.Get() == Mesh && Entry.MaterialInterface == Slot.Original)
+				{
+					Entry.MaterialInterface = Slot.Faded;
+					break;
+				}
+		TArray<FMaterialPSOPrecacheRequestID> RequestIds;
+		FGraphEventArray CompileEvents;
+		PrecacheMaterialPSOs(PrecacheData, RequestIds, CompileEvents);
+		PrecachedMeshes.Add(Mesh);
+	}
+#endif
+}
+
+// 준비된 은신 머티리얼 적용
+bool UPFShrubStealthComponent::ApplyLocalFade(UMeshComponent* Mesh)
+{
+	if (!MaterialLibrary.Get()) return false;
+	for (const FPFConcealedMaterialSlot& Slot : MaterialSlots)
+	{
+		if (Slot.Mesh.Get() != Mesh || Mesh->GetMaterial(Slot.Index) != Slot.Original) continue;
+		if (UMaterialInstance* Instance = Cast<UMaterialInstance>(Slot.Original)) Slot.Faded->CopyParameterOverrides(Instance);
+		Slot.Faded->SetScalarParameterValue(TEXT("PFShrubOpacity"), 0.5f);
+		Mesh->SetMaterial(Slot.Index, Slot.Faded);
+	}
+	return true;
 }
 
 // 은신 전 표시 상태 복원
@@ -230,6 +294,6 @@ void UPFShrubStealthComponent::RestorePresentation()
 			Mesh->SetMaterial(Slot.Index, Slot.Original);
 		}
 	}
-	MaterialSlots.Reset();
+	MaterialSlots.RemoveAll([](const FPFConcealedMaterialSlot& Slot) { return !Slot.Mesh.IsValid(); });
 	FadedMeshes.Reset();
 }

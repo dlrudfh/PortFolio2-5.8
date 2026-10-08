@@ -145,7 +145,7 @@ void UPFCharacterMovementComponent::GetRotationTarget(EPFDirection Direction, bo
 	if (!bUseRelativeRotation) return;
 
 	bMovementRotation = (Character->GetCurrentControlMode() == TOPVIEW && !Character->IsViewpointFixed())
-		|| (Character->GetCurrentControlMode() != FPS && Character->IsSprinting() && Character->CanSprint()
+		|| (Character->IsSprinting() && Character->CanSprint()
 			&& !Character->IsAttackCommandActive() && !Character->IsMovementBlocked()
 			&& (Direction == LEFT || Direction == RIGHT));
 	if (bMovementRotation)

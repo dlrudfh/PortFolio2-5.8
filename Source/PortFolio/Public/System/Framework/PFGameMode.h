@@ -6,6 +6,7 @@
 #include "PFGameMode.generated.h"
 
 class APFPlayerController;
+class APFCharacter;
 class UCapsuleComponent;
 struct FCollisionQueryParams;
 
@@ -23,16 +24,25 @@ public:
 		const FVector* SpawnCenter = nullptr, float SpawnRadius = 0.f);
 
 	virtual void BeginPlay() override;
+	virtual void InitGameState() override;
+	virtual void PreLogin(const FString& Options, const FString& Address, const FUniqueNetIdRepl& UniqueId, FString& ErrorMessage) override;
+	virtual void PostLogin(APlayerController* NewPlayer) override;
 
 	virtual void HandleStartingNewPlayer_Implementation(APlayerController* NewPlayer) override;
 	virtual void RestartPlayer(AController* NewPlayer) override;
 
 	void RequestInitialSpawn(APFPlayerController* NewPlayer, ECHARACTER SelectedCharacter);
 	void ChangeTestMap();
+	static bool ServerTravel(UWorld* World, const FString& URL);
+	APFCharacter* SpawnEnemy(APFCharacter* ControlledPawn, UClass* EnemyClass);
+	APFCharacter* SpawnCampaignEnemy(UClass* EnemyClass, const FTransform& GroundTransform);
+	bool RespawnCampaignPlayer(APFPlayerController* Player);
+	void RetryCampaignSpawns();
+	bool IsCampaignPartyReady() const;
 
 	void RespawnPlayer(TWeakObjectPtr<APlayerController> PlayerController);
 
-	virtual void ChangeCharacter(AController* Controller);
+	virtual void ChangeCharacter(class APFPlayerController* Controller);
 
 	virtual UClass* GetDefaultPawnClassForController_Implementation(AController* Controller) override;
 
@@ -43,9 +53,11 @@ private:
 
 	// 맵 전환 대상, 패키징 참조
 	UPROPERTY()
-	TSoftObjectPtr<UWorld> TestMap2;
+	TSoftObjectPtr<UWorld> TutorialMap;
 	UPROPERTY()
 	TSoftObjectPtr<UWorld> TestMap3;
 	UPROPERTY()
 	TArray<TSoftObjectPtr<UWorld>> AdditionalTestMaps;
+	UPROPERTY()
+	TArray<TSoftObjectPtr<class UPFCampaignDefinition>> CampaignDefinitions;
 };

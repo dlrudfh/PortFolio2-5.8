@@ -30,10 +30,8 @@ public:
 	virtual int MontageEndTask(UAnimMontage* Montage) override;
 
 private:
-	// 현재 공격 몽타주 식별자
-	int32 AttackMontageInstanceID = INDEX_NONE;
-
 	virtual void LoadMontages() override;
+	virtual void HandleMontageStarted(UAnimMontage* Montage) override;
 	UFUNCTION()
 	void AnimNotify_StartAttack();
 	UFUNCTION()

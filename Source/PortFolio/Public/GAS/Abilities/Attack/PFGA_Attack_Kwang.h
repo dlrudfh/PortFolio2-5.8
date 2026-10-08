@@ -18,21 +18,14 @@ protected:
 		const FGameplayTagContainer* SourceTags, const FGameplayTagContainer* TargetTags,
 		FGameplayTagContainer* OptionalRelevantTags = nullptr) const override;
 
-	virtual void WaitForEvent(AActor* AvatarActor) override;
 	virtual void ExecuteMontageGC(AActor* AvatarActor) override;
+	virtual UAnimMontage* GetAttackMontage(APFCharacter* Character) override;
 	virtual void EndAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo,
 		const FGameplayAbilityActivationInfo ActivationInfo, bool bReplicateEndAbility, bool bWasCancelled) override;
-	virtual void HandleAttackInputPressed() override;
 
 private:
-	UFUNCTION()
-	void OnComboWindow(FGameplayEventData Payload);
-	void TryContinueCombo();
 	void AdvanceComboIndex();
 
 private:
 	int32 ComboIndex = 0;
-
-	// 콤보 입력 구간 이벤트
-	FGameplayTag ComboWindowEventTag;
 };
