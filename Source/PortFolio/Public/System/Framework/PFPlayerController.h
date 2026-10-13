@@ -58,6 +58,7 @@ public:
 	void ToggleInventory();
 	void ToggleStats();
 	void ToggleShop();
+	void ToggleFullMap();
 	bool IsShopOpen() const;
 	bool CanUseUIInput() const;
 	bool CanUseSettingsInput() const;
@@ -81,6 +82,7 @@ private:
 	void ReleaseScreenFade();
 	void UpdateUIAvailability();
 	void UpdateCampaignPresentation();
+	void UpdateCampaignSpectatorTarget();
 	void ReleaseCampaignPresentation();
 	void SkipCampaignCamera();
 	UFUNCTION(Server, Reliable)
@@ -110,7 +112,6 @@ private:
 	void ViewChange();
 	void Interaction();
 	void ChangeCharacter();
-	void ChangeTestMap();
 	void SpawnTestTwinblastEnemy();
 	void SpawnTestKwangEnemy();
 	FVector CalculateAimPoint(const class APFCharacter* ControlledPawn, bool* bOutCharacterTargeted = nullptr) const;
@@ -130,8 +131,6 @@ private:
 	UFUNCTION(Server, Reliable)
 	void Server_ChangeCharacter(class APFCharacter* ControlledPawn);
 	UFUNCTION(Server, Reliable)
-	void Server_ChangeTestMap(class APFCharacter* ControlledPawn);
-	UFUNCTION(Server, Reliable)
 	void Server_SpawnTestEnemy(class APFCharacter* ControlledPawn, bool bSpawnTwinblast);
 	UFUNCTION(Server, Reliable)
 	void Server_RequestTutorialBot(class APFTutorialManager* Manager, class APFCharacter* ControlledPawn);
@@ -146,6 +145,8 @@ private:
 	void UpdateWindowInputMode();
 	void ReleaseGameplayInputForWindow();
 	void CloseShop();
+	void CloseFullMap();
+	bool IsFullMapOpen() const;
 
 	void UseQuickSlotByIndex(int32 QuickSlotIndex);
 
@@ -182,6 +183,8 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<class ACameraActor> CampaignCamera;
 	TWeakObjectPtr<AActor> CampaignPreviousView;
+	UPROPERTY(Replicated)
+	TObjectPtr<class APFCharacter> CampaignSpectatorTarget;
 	TWeakObjectPtr<class APFCampaignDirector> PresentedCampaign;
 	UPROPERTY(Replicated) FVector CampaignGuide = FVector::ZeroVector;
 	UPROPERTY(Replicated) bool bHasCampaignGuide = false;
@@ -207,6 +210,8 @@ private:
 	class UPFCrosshairWidget* CrosshairWidget = nullptr;
 	UPROPERTY(Transient)
 	class UPFMinimapWidget* MinimapWidget = nullptr;
+	UPROPERTY(Transient)
+	TObjectPtr<class UPFMinimapWidget> FullMapWidget;
 	UPROPERTY(Transient)
 	class UPFTutorialWidget* TutorialWidget = nullptr;
 	// 현재 맵의 튜토리얼 관리자

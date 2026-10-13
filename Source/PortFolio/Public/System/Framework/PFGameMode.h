@@ -32,7 +32,6 @@ public:
 	virtual void RestartPlayer(AController* NewPlayer) override;
 
 	void RequestInitialSpawn(APFPlayerController* NewPlayer, ECHARACTER SelectedCharacter);
-	void ChangeTestMap();
 	static bool ServerTravel(UWorld* World, const FString& URL);
 	APFCharacter* SpawnEnemy(APFCharacter* ControlledPawn, UClass* EnemyClass);
 	APFCharacter* SpawnCampaignEnemy(UClass* EnemyClass, const FTransform& GroundTransform);

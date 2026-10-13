@@ -4,6 +4,13 @@
 #include "AI/Navigation/NavigationRelevantData.h"
 #include "Engine/StaticMesh.h"
 
+bool UPFEnvironmentInstancesComponent::SupportsDitheredLODTransitions(EShaderPlatform ShaderPlatform)
+{
+	// 컴포넌트 배율에 따른 LOD 디더링 거리 오차 차단
+	return GetComponentTransform().GetScale3D().Equals(FVector::OneVector, KINDA_SMALL_NUMBER)
+		&& Super::SupportsDitheredLODTransitions(ShaderPlatform);
+}
+
 #if WITH_EDITOR
 void UPFEnvironmentInstancesComponent::BeginPlay()
 {

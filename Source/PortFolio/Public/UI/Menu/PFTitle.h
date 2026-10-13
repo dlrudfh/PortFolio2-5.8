@@ -26,6 +26,7 @@ protected:
 	virtual void NativeConstruct() override;
 	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
 	virtual void NativeDestruct() override;
+	virtual FReply NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;
 
 private:
 	UFUNCTION()
@@ -87,6 +88,9 @@ private:
 	void CloseCharacterSelection();
 	void SelectMap(FName MapName);
 	void SelectCharacter(ECHARACTER Character);
+	void SelectCapacity(int32 Capacity);
+	void OpenCapacitySelection();
+	void CloseCapacitySelection();
 	void RefreshSetup();
 	void RefreshLobby();
 	void RebuildDummies(const TArray<class APFPlayerState*>& Players, bool bVersus);
@@ -169,6 +173,7 @@ private:
 	int32 PreviewPlayerCount = 0;
 	uint8 CurrentPage = 0;
 	bool bDummiesAreVersus = false;
+	bool bEditingLobbyCapacity = false;
 
 	bool IsCreateSession = true;
 	bool bSessionBusy = false;

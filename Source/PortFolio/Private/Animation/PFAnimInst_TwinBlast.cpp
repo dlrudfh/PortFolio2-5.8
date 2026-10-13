@@ -34,7 +34,9 @@ void UPFAnimInst_TwinBlast::PlayMontage(int NextIdx)
 
 void UPFAnimInst_TwinBlast::HandleMontageStarted(UAnimMontage* Montage)
 {
-	if (Montage != Montages[etoi(LEFTATTACK)] && Montage != Montages[etoi(RIGHTATTACK)]) return;
+	const bool bNormalAttack = Montage == Montages[etoi(LEFTATTACK)] || Montage == Montages[etoi(RIGHTATTACK)];
+	bAttackStartedRelaxed = bNormalAttack && IsRelaxed;
+	if (!bNormalAttack) return;
 	TrackAttackMontage(Montage, TEXT("Shoot"), TEXT("RelaxShoot"));
 }
 
@@ -49,6 +51,7 @@ int UPFAnimInst_TwinBlast::MontageEndTask(UAnimMontage* Montage)
 		{
 			return etoi(MONTAGE_END);
 		}
+		Set_Lerp(LerpVal, false, 10.f);
 	}
 
 	if (MtgIdx == etoi(ULTSTART))
@@ -70,7 +73,7 @@ bool UPFAnimInst_TwinBlast::IsUltimateAttackMontagePlaying() const
 // 공격 자세에서 발사 알림
 void UPFAnimInst_TwinBlast::AnimNotify_Shoot()
 {
-	if (!IsRelaxed)
+	if (!bAttackStartedRelaxed)
 	{
 		SendAttackGameplayEvent(PFGameplayTags::Character_Event_Attack_Shoot);
 	}
@@ -79,7 +82,7 @@ void UPFAnimInst_TwinBlast::AnimNotify_Shoot()
 // 대기 자세에서 발사 알림
 void UPFAnimInst_TwinBlast::AnimNotify_RelaxShoot()
 {
-	if (IsRelaxed)
+	if (bAttackStartedRelaxed)
 	{
 		SendAttackGameplayEvent(PFGameplayTags::Character_Event_Attack_Shoot);
 		RelaxTime = 3.f;

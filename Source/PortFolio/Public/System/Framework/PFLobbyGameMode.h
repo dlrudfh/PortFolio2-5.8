@@ -23,6 +23,7 @@ public:
 	void SelectCharacter(APFLobbyPlayerController* Player, ECHARACTER Character);
 	void SetReady(APFLobbyPlayerController* Player, bool bReady, int32 SettingsRevision);
 	void SelectMap(APFLobbyPlayerController* Player, FName Map);
+	void SetCapacity(APFLobbyPlayerController* Player, int32 Capacity);
 	void StartMatch(APFLobbyPlayerController* Player);
 	void LeaveLobby(APFLobbyPlayerController* Player);
 

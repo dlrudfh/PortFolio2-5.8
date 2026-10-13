@@ -43,6 +43,16 @@ bool APFSessionGameState::IsHost(const APlayerState* Player) const
 	return Player && Player == HostPlayer;
 }
 
+// 실제 로비 참가 인원 조회
+int32 APFSessionGameState::GetLobbyPlayerCount() const
+{
+	int32 Count = 0;
+	for (const APlayerState* Entry : PlayerArray)
+		if (const APFPlayerState* Player = Cast<APFPlayerState>(Entry); IsValid(Player) && Player->GetLobbySlot() >= 0)
+			++Count;
+	return Count;
+}
+
 // 로비 시작 가능 여부 확인
 bool APFSessionGameState::CanStart() const
 {
@@ -73,8 +83,8 @@ bool APFSessionGameState::IsPartyReady() const
 		else if (Player->GetCharacter() == CHARACTER_KWANG) ++Kwangs;
 		else return false;
 	}
-	return bHasHost && Players == Capacity
-		&& (Mode != EPFSessionMode::Story || Capacity == 1 || (TwinBlasts > 0 && Kwangs > 0));
+	return bHasHost && Players > 0 && Players <= Capacity
+		&& (Mode != EPFSessionMode::Story || Players == 1 || (TwinBlasts > 0 && Kwangs > 0));
 }
 
 // 준비 전 로비 퇴장 허용

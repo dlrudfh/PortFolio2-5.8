@@ -48,6 +48,7 @@
 #include "UI/Menu/PFMenuWidget.h"
 #include "InputCoreTypes.h"
 #include "Misc/PackageName.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 
 APFPlayerController::APFPlayerController()
 {
@@ -125,6 +126,9 @@ void APFPlayerController::OnRep_PlayerState()
 
 void APFPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	if (FullMapWidget) FullMapWidget->RemoveFromParent();
+	FullMapWidget = nullptr;
+	CampaignSpectatorTarget = nullptr;
 	bMapFadePending = false;
 	MapFadeInRemaining = 0.f;
 	ReleaseScreenFade();
@@ -275,7 +279,7 @@ void APFPlayerController::SetupInputComponent()
 		Binding.KeyDelegate.GetDelegateForManualSet().BindUObject(this, &APFPlayerController::UseQuickSlotByIndex, Index);
 		InputComponent->KeyBindings.Add(MoveTemp(Binding));
 	}
-	InputComponent->BindKey(EKeys::M, EInputEvent::IE_Pressed, this, &APFPlayerController::ChangeTestMap);
+	InputComponent->BindKey(EKeys::M, EInputEvent::IE_Pressed, this, &APFPlayerController::ToggleFullMap);
 	InputComponent->BindKey(EKeys::Enter, EInputEvent::IE_Pressed, this, &APFPlayerController::SkipCampaignCamera);
 	// 행동, 이동 입력 연결
 	InputComponent->BindAction(TEXT("ViewChange"), EInputEvent::IE_Pressed, this, &APFPlayerController::ViewChange);
@@ -348,6 +352,7 @@ void APFPlayerController::Tick(float DeltaTime)
 	if (HasAuthority())
 	{
 		CampaignGuideRemaining -= DeltaTime;
+		UpdateCampaignSpectatorTarget();
 		if (CampaignGuideRemaining <= 0.f)
 		{
 			CampaignGuideRemaining = .5f;
@@ -356,9 +361,12 @@ void APFPlayerController::Tick(float DeltaTime)
 				&& Director->GetObjectiveLocation(this, CampaignGuide);
 		}
 	}
-	if (IsLocalController())
+	if (IsLocalController() && GetLocalPlayer())
 	{
 		UpdateCampaignPresentation();
+		// 관전, 연출 중에도 서버에 현재 카메라 위치 전달
+		if (PlayerCameraManager && GetNetMode() == NM_Client && (bCampaignWaiting || bCampaignCameraActive))
+			PlayerCameraManager->bShouldSendClientSideCameraUpdate = true;
 		UpdateMapPresentation(DeltaTime);
 		UpdateScreenFade(DeltaTime);
 		UpdateUIAvailability();
@@ -370,6 +378,7 @@ void APFPlayerController::Tick(float DeltaTime)
 // 맵 진입 화면을 검게 유지
 void APFPlayerController::BeginMapPresentation()
 {
+	CloseFullMap();
 	bMapFadePending = true;
 	bMapPresentationReady = false;
 	bMapStreamingPrimed = false;
@@ -593,11 +602,12 @@ void APFPlayerController::UpdateUIAvailability()
 	const bool bCanUseUI = CanUseUIInput();
 	const bool bCanUseSettings = CanUseSettingsInput();
 	const bool bCanUseResult = CanUseCampaignResultInput();
+	if (!bCanUseUI) CloseFullMap();
 	if (InventoryWidget) InventoryWidget->SetIsEnabled(bCanUseUI);
 	if (StatWidget) StatWidget->SetIsEnabled(bCanUseUI);
 	if (ShopWidget) ShopWidget->SetIsEnabled(bCanUseUI);
 	if (MenuWidget && !bCanUseSettings) MenuWidget->SetIsEnabled(false);
-	if (CampaignWidget) CampaignWidget->SetIsEnabled(bCanUseUI || bCanUseResult);
+	if (CampaignWidget) CampaignWidget->SetIsEnabled(true);
 	if (bCanUseUI) return;
 	const bool bWindowOpen = (InventoryWidget && InventoryWidget->IsInventoryWindowVisible())
 		|| (StatWidget && StatWidget->IsStatWindowVisible()) || IsShopOpen()
@@ -624,7 +634,47 @@ void APFPlayerController::SetCampaignWaiting(bool bWaiting)
 	if (!HasAuthority()) return;
 	bCampaignWaiting = bWaiting;
 	if (bWaiting) ResetGameplayInput();
+	UpdateCampaignSpectatorTarget();
 	ForceNetUpdate();
+}
+
+// 서버 관전 대상, 시선 복제 기준 동기화
+void APFPlayerController::UpdateCampaignSpectatorTarget()
+{
+	if (!HasAuthority()) return;
+	const APFCampaignDirector* Director = APFCampaignDirector::Find(GetWorld());
+	APFCharacter* Target = nullptr;
+	if (bCampaignWaiting && Director && Director->Progress.Phase == EPFCampaignPhase::Playing)
+	{
+		Target = CampaignSpectatorTarget;
+		if (!IsValid(Target) || Target->IsDeadCharacter() || Target == GetPawn() || !Target->GetController())
+		{
+			Target = nullptr;
+			for (auto It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+			{
+				const APFPlayerController* CandidateController = Cast<APFPlayerController>(It->Get());
+				APFCharacter* Candidate = CandidateController ? Cast<APFCharacter>(CandidateController->GetPawn()) : nullptr;
+				if (CandidateController != this && CandidateController && !CandidateController->IsCampaignWaiting() && IsValid(Candidate) && !Candidate->IsDeadCharacter())
+				{
+					Target = Candidate;
+					break;
+				}
+			}
+		}
+	}
+	AActor* PreviousTarget = CampaignSpectatorTarget;
+	if (CampaignSpectatorTarget != Target)
+	{
+		CampaignSpectatorTarget = Target;
+		ForceNetUpdate();
+	}
+	if (!IsLocalController())
+	{
+		if (Target && GetViewTarget() != Target) SetViewTargetWithBlend(Target, .3f, VTBlend_Linear, 0.f, true);
+		else if (!bCampaignWaiting && PreviousTarget && GetViewTarget() == PreviousTarget
+			&& (!Director || Director->Progress.Phase != EPFCampaignPhase::Camera))
+			SetViewTargetWithBlend(GetPawn() ? static_cast<AActor*>(GetPawn()) : this, .3f, VTBlend_Linear, 0.f, true);
+	}
 }
 
 // 서버에서 구한 미니맵 안내 위치
@@ -646,13 +696,14 @@ void APFPlayerController::SetCampaignViewState(const FPFCharacterSharedStateSnap
 void APFPlayerController::SkipCampaignCamera()
 {
 	if (bMapFadePending || ScreenFadeOpacity > 0.f) return;
-	if (APFCampaignDirector::Find(GetWorld())) Server_SkipCampaignCamera();
+	if (const APFCampaignDirector* Director = APFCampaignDirector::Find(GetWorld()); Director && Director->CanSkipShot(this))
+		Server_SkipCampaignCamera();
 }
 
-// 서버 연출 건너뛰기 투표
+// 서버에서 호스트의 연출 건너뛰기 처리
 void APFPlayerController::Server_SkipCampaignCamera_Implementation()
 {
-	if (APFCampaignDirector* Director = APFCampaignDirector::Find(GetWorld())) Director->VoteSkip(this);
+	if (APFCampaignDirector* Director = APFCampaignDirector::Find(GetWorld())) Director->SkipShot(this);
 }
 
 // 캠페인 HUD, 동료 관전, 공통 카메라 갱신
@@ -699,7 +750,8 @@ void APFPlayerController::UpdateCampaignPresentation()
 			ScreenFadeOpacity = FMath::Clamp(static_cast<float>(Director->ServerTime() - Director->Progress.PhaseStarted) - Shot->Duration + 1.f, 0.f, 1.f);
 		CampaignCamera->SetActorLocationAndRotation(Position, Rotation);
 		CampaignCamera->GetCameraComponent()->SetFieldOfView(Shot->FieldOfView);
-		if (GetViewTarget() != CampaignCamera) SetViewTargetWithBlend(CampaignCamera, bMapFadePending ? 0.f : .3f);
+		if (GetViewTarget() != CampaignCamera)
+			SetViewTargetWithBlend(CampaignCamera, bMapFadePending ? 0.f : .3f, VTBlend_Linear, 0.f, true);
 		return;
 	}
 	if (bCampaignCameraActive)
@@ -708,23 +760,24 @@ void APFPlayerController::UpdateCampaignPresentation()
 		bCampaignCameraActive = false;
 		if (ViewedCharacter) ViewedCharacter->SetCampaignCameraActive(false);
 		AActor* Restore = ViewedCharacter ? static_cast<AActor*>(ViewedCharacter) : CampaignPreviousView.Get();
-		if (Restore) SetViewTargetWithBlend(Restore, .3f);
+		if (Restore) SetViewTargetWithBlend(Restore, .3f, VTBlend_Linear, 0.f, true);
 		if (CampaignCamera) CampaignCamera->Destroy();
 		CampaignCamera = nullptr;
 		CampaignPreviousView.Reset();
 	}
 	if (bCampaignWaiting)
 	{
-		for (TActorIterator<APFCharacter> It(GetWorld()); It; ++It)
-			if (It->IsPlayerCharacter() && !It->IsDeadCharacter() && *It != ViewedCharacter)
-			{
-				if (GetViewTarget() != *It) SetViewTargetWithBlend(*It, .3f);
-				break;
-			}
+		APFCharacter* Target = CampaignSpectatorTarget;
+		if (IsValid(Target) && !Target->IsDeadCharacter() && Target != ViewedCharacter)
+		{
+			if (GetViewTarget() != Target) SetViewTargetWithBlend(Target, .3f, VTBlend_Linear, 0.f, true);
+		}
+		else if (ViewedCharacter && GetViewTarget() != ViewedCharacter)
+			SetViewTargetWithBlend(ViewedCharacter, .3f, VTBlend_Linear, 0.f, true);
 	}
 	else if (ViewedCharacter && GetViewTarget() != ViewedCharacter && Director->Progress.Phase == EPFCampaignPhase::Playing)
 	{
-		SetViewTargetWithBlend(ViewedCharacter, .3f);
+		SetViewTargetWithBlend(ViewedCharacter, .3f, VTBlend_Linear, 0.f, true);
 	}
 	if (Director->Progress.Phase == EPFCampaignPhase::Complete && !bCampaignResultVisible)
 	{
@@ -772,6 +825,7 @@ void APFPlayerController::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(APFPlayerController, bCampaignWaiting);
+	DOREPLIFETIME_CONDITION(APFPlayerController, CampaignSpectatorTarget, COND_OwnerOnly);
 	DOREPLIFETIME(APFPlayerController, CampaignGuide);
 	DOREPLIFETIME(APFPlayerController, bHasCampaignGuide);
 }
@@ -915,12 +969,13 @@ void APFPlayerController::GetTutorialWindows(UPFInventoryWidget*& OutInventory, 
 {
 	OutInventory = InventoryWidget;
 	OutStats = StatWidget;
-	bOutMenuOpen = (MenuWidget && MenuWidget->IsInViewport()) || IsShopOpen();
+	bOutMenuOpen = (MenuWidget && MenuWidget->IsInViewport()) || IsShopOpen() || IsFullMapOpen();
 }
 
 // 게임 메뉴 표시 전환
 void APFPlayerController::OpenMenu()
 {
+	if (IsFullMapOpen()) { CloseFullMap(); return; }
 	if (!CanUseSettingsInput()) return;
 	if (!IsLocalController() || !GetWorld()
 		|| FPackageName::GetShortName(GetWorld()->GetMapName()).Contains(TEXT("Title")))
@@ -966,7 +1021,7 @@ void APFPlayerController::BindInventoryWidget()
 // 인벤토리 창 표시 전환
 void APFPlayerController::ToggleInventory()
 {
-	if (!CanUseUIInput()) return;
+	if (!CanUseUIInput() || IsFullMapOpen()) return;
 	if (!IsLocalController())
 	{
 		PFLOG(Warning, TEXT("ToggleInventory Rejected Because Not LocalController"));
@@ -1016,7 +1071,7 @@ void APFPlayerController::ToggleInventory()
 // 스탯 창 표시 전환
 void APFPlayerController::ToggleStats()
 {
-	if (!CanUseUIInput()) return;
+	if (!CanUseUIInput() || IsFullMapOpen()) return;
 	if (!IsLocalController())
 	{
 		return;
@@ -1066,10 +1121,45 @@ void APFPlayerController::CloseShop()
 	UpdateWindowInputMode();
 }
 
+// 중앙 전체 지도 표시 여부
+bool APFPlayerController::IsFullMapOpen() const
+{
+	return FullMapWidget && FullMapWidget->IsInViewport();
+}
+
+// 전체 지도 닫기, 게임 입력 복원
+void APFPlayerController::CloseFullMap()
+{
+	if (!IsFullMapOpen()) return;
+	FullMapWidget->RemoveFromParent();
+	FlushPressedKeys();
+	UpdateWindowInputMode();
+}
+
+// 기존 미니맵을 유지한 중앙 전체 지도
+void APFPlayerController::ToggleFullMap()
+{
+	if (!IsLocalController()) return;
+	if (IsFullMapOpen()) { CloseFullMap(); return; }
+	if (!CanUseUIInput() || !MinimapWidget || (MenuWidget && MenuWidget->IsInViewport())) return;
+	if (!FullMapWidget)
+	{
+		FullMapWidget = CreateWidget<UPFMinimapWidget>(this, UPFMinimapWidget::StaticClass());
+		if (!FullMapWidget) return;
+		FullMapWidget->SetWholeMapMode(true);
+	}
+	if (InventoryWidget) InventoryWidget->SetInventoryWindowVisible(false);
+	if (StatWidget) StatWidget->SetStatWindowVisible(false);
+	CloseShop();
+	ReleaseGameplayInputForWindow();
+	FullMapWidget->AddToPlayerScreen(etoi(PLAYERSTAT) + 6);
+	UpdateWindowInputMode();
+}
+
 // 상점 표시 전환, 로컬 조작 해제
 void APFPlayerController::ToggleShop()
 {
-	if (!IsLocalController() || !CanUseUIInput()) return;
+	if (!IsLocalController() || !CanUseUIInput() || IsFullMapOpen()) return;
 	if (IsShopOpen())
 	{
 		CloseShop();
@@ -1107,6 +1197,7 @@ void APFPlayerController::UpdateWindowInputMode()
 {
 	UUserWidget* ModalWidget = nullptr;
 	if (CanUseSettingsInput() && MenuWidget && MenuWidget->IsInViewport()) ModalWidget = MenuWidget;
+	else if (CanUseUIInput() && IsFullMapOpen()) ModalWidget = FullMapWidget;
 	else if (CanUseUIInput() && IsShopOpen()) ModalWidget = ShopWidget;
 	else if (CanUseCampaignResultInput() && CampaignWidget) ModalWidget = CampaignWidget;
 	if (ModalWidget)
@@ -1177,7 +1268,7 @@ void APFPlayerController::UpdateWindowInputMode()
 // 지정한 퀵슬롯 사용 요청
 void APFPlayerController::UseQuickSlotByIndex(int32 QuickSlotIndex)
 {
-	if (!IsLocalController() || !CanUseUIInput())
+	if (!IsLocalController() || !CanUseUIInput() || IsFullMapOpen())
 	{
 		return;
 	}
@@ -1296,7 +1387,7 @@ bool APFPlayerController::CanUseCampaignResultInput() const
 // 공통 조작 상태, 열린 창에 따른 일반 행동 차단
 bool APFPlayerController::CanUseGameplayInput(const APFCharacter* ControlledPawn) const
 {
-	return CanUseUIInput() && IsCurrentCharacter(ControlledPawn) && !IsShopOpen()
+	return CanUseUIInput() && IsCurrentCharacter(ControlledPawn) && !IsShopOpen() && !IsFullMapOpen()
 		&& !(MenuWidget && MenuWidget->IsInViewport());
 }
 
@@ -1722,16 +1813,16 @@ void APFPlayerController::Interaction()
 	}
 }
 
-// 서버 상자 열기
+// 서버 스토리 진행, 보급, 상자 상호작용
 void APFPlayerController::Server_Interaction_Implementation(APFCharacter* ControlledPawn)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(PF_Interaction);
+	if (!CanUseGameplayInput(ControlledPawn) || ControlledPawn->IsLevelStartActive()) return;
 	if (APFCampaignDirector* Director = APFCampaignDirector::Find(GetWorld()))
 	{
-		if (CanUseGameplayInput(ControlledPawn)) Director->Interact(this);
-		return;
+		if (Director->Interact(this)) return;
 	}
-	if (CanUseGameplayInput(ControlledPawn) && !ControlledPawn->IsLevelStartActive()
-		&& NearestChest.IsValid()
+	if (NearestChest.IsValid()
 		&& NearestChest->Trigger->IsOverlappingActor(ControlledPawn))
 	{
 		NearestChest->ChestOpen(this);
@@ -1759,29 +1850,6 @@ void APFPlayerController::Server_ChangeCharacter_Implementation(APFCharacter* Co
 	if (APFGameMode* GameMode = GetWorld()->GetAuthGameMode<APFGameMode>())
 	{
 		GameMode->ChangeCharacter(this);
-	}
-}
-
-// 테스트 맵 전환 요청
-void APFPlayerController::ChangeTestMap()
-{
-	APFCharacter* ControlledPawn = GetControlledCharacter();
-	if (IsLocalController() && CanUseGameplayInput(ControlledPawn) && !ControlledPawn->IsLevelStartActive())
-	{
-		Server_ChangeTestMap(ControlledPawn);
-	}
-}
-
-// 서버에서 현재 캐릭터의 맵 전환 요청 처리
-void APFPlayerController::Server_ChangeTestMap_Implementation(APFCharacter* ControlledPawn)
-{
-	if (!CanUseGameplayInput(ControlledPawn) || ControlledPawn->IsLevelStartActive())
-	{
-		return;
-	}
-	if (APFGameMode* GameMode = GetWorld()->GetAuthGameMode<APFGameMode>())
-	{
-		GameMode->ChangeTestMap();
 	}
 }
 

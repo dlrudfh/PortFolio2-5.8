@@ -96,7 +96,8 @@ void UPFGA_BasicAttack::EndAbility(
 	SetComboWindowTag(false);
 	// 몽타주 구독, 공격 참조 정리
 	TWeakObjectPtr<UPFAnimInstance> AnimInstanceToReset = BoundAnimInstance;
-	const bool bStopMontage = bWasCancelled || (ActorInfo && !ActorInfo->IsNetAuthority() && RemoteInstanceEnded);
+	const bool bPredictionRejected = GetCurrentActivationInfo().ActivationMode == EGameplayAbilityActivationMode::Rejected;
+	const bool bStopMontage = bWasCancelled || bPredictionRejected || (ActorInfo && !ActorInfo->IsNetAuthority() && RemoteInstanceEnded);
 
 	UnbindAttackMontageEnd();
 	BoundAnimInstance.Reset();

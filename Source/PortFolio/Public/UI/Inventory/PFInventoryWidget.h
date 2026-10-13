@@ -7,6 +7,7 @@
 
 class UTexture2D;
 struct FPFInventorySlot;
+struct FStreamableHandle;
 
 // 슬롯 표시 요소
 USTRUCT()
@@ -75,7 +76,9 @@ private:
 
 	void ClearDragPreview();
 	void CancelDrag();
-	UTexture2D* GetInventoryItemTexture(int32 ItemID);
+	void PreloadItemIcons();
+	void HandleItemIconsLoaded();
+	UTexture2D* GetInventoryItemTexture(int32 ItemID) const;
 
 	FReply HandleInventoryMouseButtonDown(const FPointerEvent& InMouseEvent);
 
@@ -86,6 +89,10 @@ private:
 	// 아이템 아이콘 캐시
 	UPROPERTY(Transient)
 	TMap<int32, TObjectPtr<UTexture2D>> ItemIconCache;
+
+	// 아이템 아이콘 비동기 로드 핸들
+	TSharedPtr<FStreamableHandle> ItemIconLoadHandle;
+	bool bInventoryConstructed = false;
 
 	// 창, 퀵슬롯 배치 영역
 	UPROPERTY()

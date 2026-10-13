@@ -13,6 +13,8 @@
 #include "Particles/ParticleSystem.h"
 #include "Particles/ParticleSystemComponent.h"
 #include "GameFramework/PlayerController.h"
+#include "Camera/PlayerCameraManager.h"
+#include "HAL/IConsoleManager.h"
 
 APFTwinBlast::APFTwinBlast() : ShootLeft(true), UltGun(nullptr), UltShoulderEffect(nullptr)
 {
@@ -276,6 +278,16 @@ void APFTwinBlast::PlayShotEffects(bool bShootLeft, bool bUltimate)
 	{
 		Muzzle->SetOnlyOwnerSee(IsFirstPersonPresentationActive());
 		Muzzle->SetFirstPersonPrimitiveType(IsFirstPersonPresentationActive() ? EFirstPersonPrimitiveType::FirstPerson : EFirstPersonPrimitiveType::None);
+		static const IConsoleVariable* ShotFXDebug = IConsoleManager::Get().FindConsoleVariable(TEXT("pf.DebugShotFX"));
+		if (ShotFXDebug && ShotFXDebug->GetInt() != 0)
+		{
+			const APlayerCameraManager* ViewCamera = UGameplayStatics::GetPlayerCameraManager(this, 0);
+			const float CameraDistance = ViewCamera ? FVector::Distance(ViewCamera->GetCameraLocation(), Muzzle->GetComponentLocation()) : -1.f;
+			PFLOG(Log, TEXT("PFShotFX Event=Muzzle World=%s NetMode=%d Pawn=%s Effect=%s Socket=%s Location=%s Scale=%s FirstPerson=%d CameraDistance=%.1f"),
+				*GetPathNameSafe(GetWorld()), static_cast<int32>(GetNetMode()), *GetName(), *GetPathNameSafe(Muzzle->Template),
+				*SocketName.ToString(), *Muzzle->GetComponentLocation().ToString(), *Muzzle->GetComponentScale().ToString(),
+				IsFirstPersonPresentationActive() ? 1 : 0, CameraDistance);
+		}
 	}
 	UGameplayStatics::PlaySound2D(this, Sounds[etoi(bUltimate ? ULTSHOOT : SHOOT)]);
 }

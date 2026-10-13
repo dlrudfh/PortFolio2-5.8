@@ -15,16 +15,62 @@
 #include "GameFramework/GameStateBase.h"
 #include "GAS/Attributes/PFAttributeSet.h"
 #include "GAS/Effects/PFGE_StatGameplayEffects.h"
+#include "HAL/PlatformTime.h"
 #include "Kismet/GameplayStatics.h"
 #include "NavigationSystem.h"
 #include "NavigationPath.h"
 #include "Net/UnrealNetwork.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "Props/PFItem.h"
 #include "Projectile/Projectile.h"
 #include "System/Framework/PFGameInstance.h"
 #include "System/Framework/PFGameMode.h"
 #include "System/Framework/PFPlayerController.h"
+#include "System/Framework/PFSessionGameState.h"
 #include "System/Subsystems/PFWorldSubsystem.h"
+
+namespace
+{
+	// 캠페인 단계 처리 시작, 종료, 지연 기록
+	class FPFCampaignOperationLog
+	{
+	public:
+		FPFCampaignOperationLog(const APFCampaignDirector& InDirector, const TCHAR* InOperation, bool bInEnabled = true)
+			: Director(InDirector), Operation(InOperation), bEnabled(bInEnabled), StartedAt(FPlatformTime::Seconds())
+		{
+			if (!bEnabled) return;
+			Map = Director.GetWorld()->GetMapName();
+			NetMode = static_cast<int32>(Director.GetNetMode());
+			UE_LOG(LogTemp, Log, TEXT("Campaign %s Begin Map=%s NetMode=%d Step=%d Phase=%d"),
+				Operation, *Map, NetMode, Director.Progress.Step, static_cast<int32>(Director.Progress.Phase));
+		}
+
+		// 처리 시간 기록
+		~FPFCampaignOperationLog()
+		{
+			if (!bEnabled) return;
+			const double ElapsedMs = (FPlatformTime::Seconds() - StartedAt) * 1000.;
+			if (ElapsedMs >= 100.)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("Campaign %s End Map=%s NetMode=%d Step=%d Phase=%d ElapsedMs=%.3f"),
+					Operation, *Map, NetMode, Director.Progress.Step, static_cast<int32>(Director.Progress.Phase), ElapsedMs);
+			}
+			else
+			{
+				UE_LOG(LogTemp, Log, TEXT("Campaign %s End Map=%s NetMode=%d Step=%d Phase=%d ElapsedMs=%.3f"),
+					Operation, *Map, NetMode, Director.Progress.Step, static_cast<int32>(Director.Progress.Phase), ElapsedMs);
+			}
+		}
+
+	private:
+		const APFCampaignDirector& Director;
+		const TCHAR* Operation;
+		bool bEnabled;
+		double StartedAt;
+		FString Map;
+		int32 NetMode = 0;
+	};
+}
 
 APFCampaignDirector::APFCampaignDirector()
 {
@@ -236,7 +282,16 @@ bool APFCampaignDirector::FindPlayerStart(APFPlayerController* Player, FTransfor
 		if (GetWorld()->OverlapBlockingTestByChannel(Location, FQuat::Identity, Capsule->GetCollisionObjectType(),
 			FCollisionShape::MakeCapsule(Capsule->GetScaledCapsuleRadius(), Capsule->GetScaledCapsuleHalfHeight()), Query,
 			FCollisionResponseParams(Capsule->GetCollisionResponseToChannels()))) continue;
-		Result = FTransform(Start->GetActorRotation(), Location);
+		FRotator Rotation = Start->GetActorRotation();
+		if (ActiveCheckpoint == Definition->StartCheckpoint && Progress.Step == 0)
+		{
+			if (const APFCampaignAnchor* Target = Anchor(Definition->Steps[0].Target))
+			{
+				const FVector Direction = (Target->GetActorLocation() - Location).GetSafeNormal2D();
+				if (!Direction.IsNearlyZero()) Rotation = FRotator(0.f, Direction.Rotation().Yaw, 0.f);
+			}
+		}
+		Result = FTransform(Rotation, Location);
 		return true;
 	}
 	Fail(FString::Printf(TEXT("사용 가능한 지정 시작점 없음: %s, 슬롯 %d"), *ActiveCheckpoint.ToString(), Slot + 1));
@@ -309,20 +364,22 @@ bool APFCampaignDirector::CanReach(const APFPlayerController* Player, const APFC
 }
 
 // 서버 장치 조작, 개인별 보급 지급
-void APFCampaignDirector::Interact(APFPlayerController* Player)
+bool APFCampaignDirector::Interact(APFPlayerController* Player)
 {
-	if (!HasAuthority() || !Definition || !Run || Progress.Phase != EPFCampaignPhase::Playing) return;
+	TRACE_CPUPROFILER_EVENT_SCOPE(PF_CampaignInteract);
+	if (!HasAuthority() || !Definition || !Run || Progress.Phase != EPFCampaignPhase::Playing) return false;
 	APFPlayerState* State = Player ? Player->GetPlayerState<APFPlayerState>() : nullptr;
-	if (!State) return;
+	if (!State) return false;
 	const FPFCampaignStep* Step = FindInteractionStep(Player);
-	if (Step && PartyReady(Step->Target))
+	if (Step)
 	{
-		Advance();
-		return;
+		if (PartyReady(Step->Target)) Advance();
+		return true;
 	}
 	FString Claim;
 	const FPFCampaignSupply* Supply = FindSupply(Player, Claim);
-	if (!Supply || !State->GrantCampaignSupply()) return;
+	if (!Supply) return false;
+	if (!State->GrantCampaignSupply()) return true;
 	Claims.Add(Claim);
 	Progress.SupplyClaims = Claims.Array();
 	if (!Supply->Record.IsEmpty())
@@ -330,6 +387,7 @@ void APFCampaignDirector::Interact(APFPlayerController* Player)
 		Run->Records.Add(FString::Printf(TEXT("%d/%s"), Definition->Chapter, *Supply->Anchor.ToString()));
 		Progress.Radio = Supply->Record;
 	}
+	return true;
 }
 
 // 지정 전투의 적 생성
@@ -460,6 +518,8 @@ void APFCampaignDirector::EnemyDied(APFCharacter* Enemy)
 // 캠페인 소유 전투 액터만 정리
 void APFCampaignDirector::ClearEncounters()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(PF_CampaignClearEncounters);
+	const FPFCampaignOperationLog OperationLog(*this, TEXT("ClearEncounters"));
 	TSet<APFCharacter*> Sources;
 	for (APFPlayerController* Player : Party())
 		if (APFCharacter* Character = Cast<APFCharacter>(Player->GetPawn())) Sources.Add(Character);
@@ -483,11 +543,13 @@ void APFCampaignDirector::ClearEncounters()
 // 체크포인트에서 생존자 회복, 관전자 복귀
 bool APFCampaignDirector::RestoreParty(bool bRollback, bool bRespawnAll)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(PF_CampaignRestoreParty);
 	APFGameMode* Mode = GetWorld()->GetAuthGameMode<APFGameMode>();
 	if (!Mode) return false;
 	const TArray<APFPlayerController*> Members = Party();
 	for (APFPlayerController* Player : Members)
 		if (!Player->HasClientLoadedCurrentWorld()) return false;
+	const FPFCampaignOperationLog OperationLog(*this, TEXT("RestoreParty"));
 	for (APFPlayerController* Player : Members)
 	{
 		APFPlayerState* State = Player->GetPlayerState<APFPlayerState>();
@@ -521,6 +583,7 @@ bool APFCampaignDirector::RestoreParty(bool bRollback, bool bRespawnAll)
 // 플레이어와 현재 구간의 적 등장 시작
 void APFCampaignDirector::StartStage()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(PF_CampaignStartStage);
 	Progress.Phase = EPFCampaignPhase::Starting;
 	if (!Definition->Steps.IsValidIndex(Progress.Step)) { FinishChapter(); return; }
 	APFGameMode* Mode = GetWorld()->GetAuthGameMode<APFGameMode>();
@@ -541,8 +604,10 @@ void APFCampaignDirector::StartStage()
 // 파티와 목표의 복구 기준 확정
 bool APFCampaignDirector::SaveCheckpoint(FName Id, int32 NextStep)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(PF_CampaignSaveCheckpoint);
 	APFGameMode* Mode = GetWorld()->GetAuthGameMode<APFGameMode>();
 	if (!Mode || !Mode->IsCampaignPartyReady()) return false;
+	const FPFCampaignOperationLog OperationLog(*this, TEXT("SaveCheckpoint"));
 	ActiveCheckpoint = Id;
 	if (!RestoreParty(false)) return false;
 	ClearEncounters();
@@ -559,8 +624,12 @@ bool APFCampaignDirector::SaveCheckpoint(FName Id, int32 NextStep)
 // 목표 완료, 연출과 다음 단계 연결
 void APFCampaignDirector::Advance()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(PF_CampaignAdvance);
 	if (!Definition->Steps.IsValidIndex(Progress.Step)) return;
 	const FPFCampaignStep& Step = Definition->Steps[Progress.Step];
+	const APFGameMode* Mode = GetWorld()->GetAuthGameMode<APFGameMode>();
+	const FPFCampaignOperationLog OperationLog(*this, TEXT("Advance"),
+		!Step.bCheckpoint || (Mode && Mode->IsCampaignPartyReady()));
 	if (!Step.Radio.IsEmpty()) Progress.Radio = Step.Radio;
 	if (Step.bCheckpoint && !SaveCheckpoint(Step.Checkpoint, Progress.Step + 1)) return;
 	if (!Step.Shot.IsNone())
@@ -580,7 +649,6 @@ void APFCampaignDirector::StartShot(FName Id, bool bAdvanceAfter)
 	Progress.Phase = EPFCampaignPhase::Camera;
 	Progress.PhaseStarted = ServerTime();
 	bAdvanceAfterShot = bAdvanceAfter;
-	Voters.Reset();
 	for (APFPlayerController* Player : Party())
 		if (APFCharacter* Character = Cast<APFCharacter>(Player->GetPawn()))
 		{
@@ -620,15 +688,24 @@ void APFCampaignDirector::FinishShot()
 	ForceNetUpdate();
 }
 
-// 연결된 참가자의 연출 건너뛰기 투표
-void APFCampaignDirector::VoteSkip(APFPlayerController* Player)
+// 호스트의 연출 건너뛰기 권한
+bool APFCampaignDirector::CanSkipShot(const APFPlayerController* Player) const
 {
-	if (HasAuthority() && Progress.Phase == EPFCampaignPhase::Camera && Party().Contains(Player)) Voters.Add(Player);
+	const APFSessionGameState* Session = APFSessionGameState::Get(GetWorld());
+	return Progress.Phase == EPFCampaignPhase::Camera && IsValid(Player)
+		&& Session && Session->IsHost(Player->PlayerState) && Party().Contains(Player);
+}
+
+// 호스트 요청으로 파티 공통 연출 종료
+void APFCampaignDirector::SkipShot(APFPlayerController* Player)
+{
+	if (HasAuthority() && CanSkipShot(Player)) FinishShot();
 }
 
 // 전멸 구간 복구
 void APFCampaignDirector::ResetCheckpoint()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(PF_CampaignResetCheckpoint);
 	ClearEncounters();
 	RouteProgress.Reset();
 	Progress.Step = Run->CheckpointStep;
@@ -647,6 +724,12 @@ void APFCampaignDirector::ResetCheckpoint()
 // 챕터 이동 또는 캠페인 완료
 void APFCampaignDirector::FinishChapter()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(PF_CampaignFinishChapter);
+	const FPFCampaignOperationLog OperationLog(*this, TEXT("FinishChapter"),
+		Definition->Chapter == 8 || !Party().ContainsByPredicate([](APFPlayerController* Player)
+		{
+			return !Player->HasClientLoadedCurrentWorld();
+		}));
 	if (Definition->Chapter == 8)
 	{
 		Progress.Records = Run->Records.Num();
@@ -667,6 +750,8 @@ void APFCampaignDirector::FinishChapter()
 		Player->CaptureCharacterState();
 	}
 	const int32 Next = Definition->Chapter == 3 ? 4 : Definition->Chapter == 4 ? 6 : 8;
+	UE_LOG(LogTemp, Log, TEXT("Campaign travel Map%d -> Map%d, Players=%d, Step=%d"),
+		Definition->Chapter, Next, Party().Num(), Progress.Step);
 	Progress.Phase = EPFCampaignPhase::Traveling;
 	GetWorld()->GetAuthGameMode()->bUseSeamlessTravel = true;
 	const bool bStarted = APFGameMode::ServerTravel(GetWorld(), FString::Printf(TEXT("/Game/ThirdPerson/Maps/Map%d?PFMode=Campaign?SeamlessTravel"), Next));
@@ -755,12 +840,8 @@ void APFCampaignDirector::Tick(float DeltaTime)
 	}
 	if (Progress.Phase == EPFCampaignPhase::Camera)
 	{
-		Progress.Viewers = Members.Num();
-		Progress.SkipVotes = 0;
-		for (APFPlayerController* Player : Members) if (Voters.Contains(Player)) ++Progress.SkipVotes;
 		const APFCampaignShot* Shot = GetCurrentShot();
-		if (ServerTime() - Progress.PhaseStarted >= Shot->Duration
-			|| (Progress.Viewers > 0 && Progress.SkipVotes == Progress.Viewers)) FinishShot();
+		if (ServerTime() - Progress.PhaseStarted >= Shot->Duration) FinishShot();
 		return;
 	}
 	if (Progress.Phase != EPFCampaignPhase::Playing) return;
@@ -811,7 +892,9 @@ FText APFCampaignDirector::GetObjectiveText() const
 // 접근 가능한 진행 목표 조회
 const FPFCampaignStep* APFCampaignDirector::FindInteractionStep(const APFPlayerController* Player) const
 {
-	if (!Definition->Steps.IsValidIndex(Progress.Step)) return nullptr;
+	const APFSessionGameState* Session = APFSessionGameState::Get(GetWorld());
+	if (!Player || !Session || !Session->IsHost(Player->PlayerState)
+		|| !Definition || !Definition->Steps.IsValidIndex(Progress.Step)) return nullptr;
 	const FPFCampaignStep& Step = Definition->Steps[Progress.Step];
 	return (Step.Type == EPFCampaignObjective::Interact || Step.Type == EPFCampaignObjective::Rally)
 		&& CanReach(Player, Anchor(Step.Target)) ? &Step : nullptr;

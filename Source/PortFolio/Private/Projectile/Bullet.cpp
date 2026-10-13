@@ -1,5 +1,6 @@
 #include "Projectile/Bullet.h"
 #include "Campaign/PFCampaignDirector.h"
+#include "Camera/PlayerCameraManager.h"
 
 #include "System/Subsystems/PFGameInstanceSubsystem.h"
 #include "Particles/ParticleSystemComponent.h"
@@ -8,11 +9,18 @@
 #include "Engine/GameViewportClient.h"
 #include "Engine/LocalPlayer.h"
 #include "GameFramework/PlayerController.h"
+#include "HAL/IConsoleManager.h"
 #include "Materials/MaterialInterface.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "PhysicsEngine/PhysicsSettings.h"
 #include "SceneView.h"
 #include "UObject/ConstructorHelpers.h"
+
+namespace
+{
+	TAutoConsoleVariable<int32> CVarPFShotFXDebug(TEXT("pf.DebugShotFX"), 0,
+		TEXT("트윈블라스트 발사 이펙트의 위치, 크기, 발사 세대 기록"));
+}
 
 ABullet::ABullet()
 {
@@ -111,12 +119,29 @@ void ABullet::UpdatePoolVisuals()
 			TrailComponent = UGameplayStatics::SpawnEmitterAttached(Particles[etoi(TRAIL)], MeshCom, NAME_None,
 				FVector::ZeroVector, FRotator::ZeroRotator, EAttachLocation::SnapToTarget, false, EPSCPoolMethod::None, false);
 		}
-		if (TrailComponent) TrailComponent->ActivateSystem(true);
+		if (TrailComponent)
+		{
+			TrailComponent->ActivateSystem(true);
+			LogShotEffect(TEXT("TrailStart"), TrailComponent);
+		}
 	}
 	else if (IsValid(TrailComponent))
 	{
 		TrailComponent->DeactivateImmediate();
+		LogShotEffect(TEXT("TrailStop"), TrailComponent);
 	}
+}
+
+// 발사 이펙트 위치, 크기 진단
+void ABullet::LogShotEffect(const TCHAR* Event, const UParticleSystemComponent* Effect) const
+{
+	if (CVarPFShotFXDebug.GetValueOnGameThread() == 0 || !Effect) return;
+	const APlayerCameraManager* ViewCamera = UGameplayStatics::GetPlayerCameraManager(this, 0);
+	const float CameraDistance = ViewCamera ? FVector::Distance(ViewCamera->GetCameraLocation(), Effect->GetComponentLocation()) : -1.f;
+	PFLOG(Log, TEXT("PFShotFX Event=%s World=%s NetMode=%d Projectile=%s Pawn=%s Effect=%s Location=%s Scale=%s CurrentGeneration=%u CameraDistance=%.1f"),
+		Event, *GetPathNameSafe(GetWorld()), static_cast<int32>(GetNetMode()), *GetName(), *GetNameSafe(IsValid(Parent) ? Parent : nullptr),
+		*GetPathNameSafe(Effect->Template), *Effect->GetComponentLocation().ToString(), *Effect->GetComponentScale().ToString(),
+		PoolState.Generation, CameraDistance);
 }
 
 void ABullet::BeginPlay()
@@ -155,7 +180,7 @@ void ABullet::OnBeginOverlap(UPrimitiveComponent* OverlappedComponent, AActor* O
 		FHitResult CharacterHit = SweepResult;
 		CharacterHit.ImpactPoint = GetActorLocation();
 		CharacterHit.ImpactNormal = -GetActorForwardVector();
-		Mutlicast_PlayHitEffect(HITCHARACTER, CharacterHit, 0.f, false);
+		Mutlicast_PlayHitEffect(HITCHARACTER, CharacterHit, GetActorRotation(), 0.f, false);
 		ReturnToPool();
 	}
 }
@@ -173,7 +198,7 @@ void ABullet::OnProjectileStop(const FHitResult& Hit)
 	{
 		FHitResult SurfaceHit;
 		const bool bHasSurface = FindBulletMarkSurface(Hit, SurfaceHit);
-		Mutlicast_PlayHitEffect(HITWALL, bHasSurface ? SurfaceHit : Hit, FMath::FRandRange(0.f, 360.f), bHasSurface);
+		Mutlicast_PlayHitEffect(HITWALL, bHasSurface ? SurfaceHit : Hit, GetActorRotation(), FMath::FRandRange(0.f, 360.f), bHasSurface);
 	}
 
 	ReturnToPool();
@@ -218,15 +243,16 @@ bool ABullet::FindBulletMarkSurface(const FHitResult& Hit, FHitResult& SurfaceHi
 
 // 피격 이펙트, 표면 탄흔 재생
 void ABullet::Mutlicast_PlayHitEffect_Implementation(PARTICLE_BULLET particleIndex, const FHitResult& Hit,
-	float DecalRoll, bool bSpawnBulletMark)
+	FRotator EffectRotation, float DecalRoll, bool bSpawnBulletMark)
 {
 	if (GetNetMode() == NM_DedicatedServer)
 	{
 		return;
 	}
 
-	UGameplayStatics::SpawnEmitterAtLocation(GetWorld(), Particles[etoi(particleIndex)], Hit.ImpactPoint,
-		GetActorRotation(), FVector(0.5f));
+	UParticleSystemComponent* HitEffect = UGameplayStatics::SpawnEmitterAtLocation(GetWorld(), Particles[etoi(particleIndex)], Hit.ImpactPoint,
+		EffectRotation, FVector(0.5f));
+	LogShotEffect(TEXT("Impact"), HitEffect);
 	const FVector Normal = Hit.ImpactNormal.GetSafeNormal();
 	if (!bSpawnBulletMark || particleIndex != HITWALL || !IsValid(BulletMarkMaterial) || Normal.IsNearlyZero())
 	{

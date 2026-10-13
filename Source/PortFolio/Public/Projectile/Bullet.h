@@ -40,9 +40,11 @@ private:
 	void OnProjectileStop(const FHitResult& Hit);
 
 	bool FindBulletMarkSurface(const FHitResult& Hit, FHitResult& SurfaceHit) const;
+	void LogShotEffect(const TCHAR* Event, const class UParticleSystemComponent* Effect) const;
 
 	UFUNCTION(NetMulticast, Reliable)
-	void Mutlicast_PlayHitEffect(PARTICLE_BULLET particleIndex, const FHitResult& Hit, float DecalRoll, bool bSpawnBulletMark);
+	void Mutlicast_PlayHitEffect(PARTICLE_BULLET particleIndex, const FHitResult& Hit, FRotator EffectRotation,
+		float DecalRoll, bool bSpawnBulletMark);
 
 	// 현재 발사의 궤적 이펙트
 	UPROPERTY(Transient)

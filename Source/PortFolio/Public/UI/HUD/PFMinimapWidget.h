@@ -18,6 +18,7 @@ class PORTFOLIO_API UPFMinimapWidget : public UUserWidget
 
 public:
 	UPFMinimapWidget(const FObjectInitializer& ObjectInitializer);
+	void SetWholeMapMode(bool bWholeMap);
 
 protected:
 	virtual TSharedRef<SWidget> RebuildWidget() override;
@@ -25,11 +26,13 @@ protected:
 	virtual void NativePreConstruct() override;
 	virtual void NativeConstruct() override;
 	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
+	virtual FReply NativeOnPreviewKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent) override;
 	virtual int32 NativePaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
 
 private:
 	void RefreshMap();
 	void RefreshCharacters();
+	void UpdateMapLayout(const FVector2D& AvailableSize);
 
 	// 디자이너 미니맵 에셋
 	UPROPERTY()
@@ -73,5 +76,7 @@ private:
 	TArray<TWeakObjectPtr<APFCharacter>> TrackedCharacters;
 	float CharacterRefreshRemaining = 0.f;
 	bool bHasLocalCharacter = false;
+	bool bShowWholeMap = false;
+	FVector2D LastLayoutSize = FVector2D::ZeroVector;
 	static constexpr float ViewRadius = 3000.f;
 };

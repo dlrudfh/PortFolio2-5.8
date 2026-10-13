@@ -26,6 +26,8 @@
 #include "HAL/IConsoleManager.h"
 #include "Kismet/GameplayStatics.h"
 #include "Misc/PackageName.h"
+#include "Misc/ScopedCVar.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "NavigationSystem.h"
 #include "NavMesh/RecastNavMesh.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -121,6 +123,14 @@ void APFGameMode::BeginPlay()
 
 void APFGameMode::HandleStartingNewPlayer_Implementation(APlayerController* NewPlayer)
 {
+	if (NewPlayer && NewPlayer->IsLocalController())
+	{
+		if (APFSessionGameState* Session = GetGameState<APFSessionGameState>())
+		{
+			Session->HostPlayer = NewPlayer->GetPlayerState<APFPlayerState>();
+			Session->NotifySessionChanged();
+		}
+	}
 	const UWorld* World = GetWorld();
 	if (FPackageName::GetShortName(World->GetMapName()).Contains(TEXT("Title")))
 	{
@@ -231,6 +241,7 @@ bool APFGameMode::IsCampaignPartyReady() const
 // 체크포인트의 지정 위치로 플레이어 복귀
 bool APFGameMode::RespawnCampaignPlayer(APFPlayerController* Player)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(PF_CampaignRespawnPlayer);
 	if (!Player) return false;
 	FTransform Start;
 	if (!TryFindInitialPlayerSpawnTransform(Player, Start)) return false;
@@ -302,8 +313,59 @@ APFCharacter* APFGameMode::SpawnEnemy(APFCharacter* ControlledPawn, UClass* Enem
 	const float SpawnRadius = GetDefault<APFEnemyAIController>()->GetTargetSearchRadius();
 	int32 RemainingAttempts = 30;
 	FTransform SpawnTransform;
-	while (APFGameMode::FindSpawnTransform(World, EnemyCapsule, QueryParams, RemainingAttempts, false,
-		SpawnTransform, &SpawnCenter, SpawnRadius))
+	const bool bTraining = APFSessionGameState::IsTraining(World);
+	const auto FindNextSpawnTransform = [&]()
+	{
+		if (!bTraining)
+		{
+			return FindSpawnTransform(World, EnemyCapsule, QueryParams, RemainingAttempts, false,
+				SpawnTransform, &SpawnCenter, SpawnRadius);
+		}
+
+		// 튜토리얼은 액터 표시 이름 대신 도달 가능한 NavMesh에서 탐색
+		const float CapsuleRadius = EnemyCapsule->GetScaledCapsuleRadius();
+		const float CapsuleHalfHeight = EnemyCapsule->GetScaledCapsuleHalfHeight();
+		FNavAgentProperties AgentProperties = EnemyMovement->GetNavAgentPropertiesRef();
+		if (EnemyMovement->ShouldUpdateNavAgentWithOwnersCollision())
+		{
+			AgentProperties.AgentRadius = CapsuleRadius;
+			AgentProperties.AgentHeight = CapsuleHalfHeight * 2.f;
+		}
+		const FVector PlayerFeet = ControlledPawn->GetCharacterMovement()->GetActorFeetLocation();
+		ANavigationData* NavData = Navigation->GetNavDataForProps(AgentProperties, PlayerFeet);
+		FNavLocation NavOrigin;
+		if (!NavData || !Navigation->ProjectPointToNavigation(PlayerFeet, NavOrigin,
+			FVector(CapsuleRadius, CapsuleRadius, CapsuleHalfHeight * 2.f), NavData))
+		{
+			return false;
+		}
+
+		FCollisionObjectQueryParams GroundTypes;
+		GroundTypes.AddObjectTypesToQuery(ECC_WorldStatic);
+		GroundTypes.AddObjectTypesToQuery(GetCollisionChannel(PFCollisionChannelNames::Wall));
+		const FVector TraceOffset(0.f, 0.f, EnemyMovement->MaxStepHeight + 6.f);
+		while (RemainingAttempts > 0)
+		{
+			--RemainingAttempts;
+			FNavLocation Candidate;
+			if (!Navigation->GetRandomReachablePointInRadius(NavOrigin.Location, SpawnRadius, Candidate, NavData)
+				|| FVector::DistSquared2D(Candidate.Location, SpawnCenter) > FMath::Square(SpawnRadius))
+			{
+				continue;
+			}
+			FHitResult GroundHit;
+			if (!World->LineTraceSingleByObjectType(GroundHit, Candidate.Location + TraceOffset,
+				Candidate.Location - TraceOffset, GroundTypes, QueryParams) || !EnemyMovement->IsWalkable(GroundHit))
+			{
+				continue;
+			}
+			SpawnTransform = FTransform(FRotator::ZeroRotator,
+				GroundHit.ImpactPoint + FVector(0.f, 0.f, CapsuleHalfHeight + 2.f));
+			return true;
+		}
+		return false;
+	};
+	while (FindNextSpawnTransform())
 	{
 		const FVector CandidateFeet = SpawnTransform.GetLocation() - FVector(0.f, 0.f, EnemyCapsule->GetScaledCapsuleHalfHeight());
 		if (!IsOnSpawnNavMesh(CandidateFeet, EnemyMovement, EnemyCapsule))
@@ -340,60 +402,32 @@ APFCharacter* APFGameMode::SpawnEnemy(APFCharacter* ControlledPawn, UClass* Enem
 // PIE 이동 허용값 보존, 서버 맵 이동
 bool APFGameMode::ServerTravel(UWorld* World, const FString& URL)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(PF_ServerTravel);
+	if (!World || !World->GetAuthGameMode() || World->IsInSeamlessTravel() || !World->NextURL.IsEmpty())
+	{
+		PFLOG(Warning, TEXT("Server travel rejected: World=%s, URL=%s"), *GetNameSafe(World), *URL);
+		return false;
+	}
 	IConsoleVariable* PIETravel = World->WorldType == EWorldType::PIE
 		? IConsoleManager::Get().FindConsoleVariable(TEXT("net.AllowPIESeamlessTravel")) : nullptr;
-	const int32 Previous = PIETravel ? PIETravel->GetInt() : 0;
-	if (PIETravel) PIETravel->SetWithCurrentPriority(1);
-	const bool bStarted = World->ServerTravel(URL, true);
-	if (PIETravel) PIETravel->SetWithCurrentPriority(Previous);
+	bool bStarted = false;
+	if (PIETravel && !PIETravel->GetBool())
+	{
+		if ((PIETravel->GetFlags() & ECVF_SetByMask) > ECVF_SetByTemp)
+		{
+			PFLOG(Warning, TEXT("Server travel rejected: net.AllowPIESeamlessTravel is disabled by console"));
+			return false;
+		}
+		// 이동 방식은 ServerTravel 내부에서 동기 결정
+		const FScopedCVar<int32> AllowTravel(TEXT("net.AllowPIESeamlessTravel"), 1, TEXT("PFCampaignTravel"));
+		bStarted = World->ServerTravel(URL, true);
+	}
+	else
+	{
+		bStarted = World->ServerTravel(URL, true);
+	}
+	if (!bStarted) PFLOG(Warning, TEXT("Server travel failed: Map=%s, URL=%s"), *World->GetMapName(), *URL);
 	return bStarted;
-}
-
-// 테스트 맵 전환, 세션 연결 유지
-void APFGameMode::ChangeTestMap()
-{
-	if (UPFCampaignSubsystem::IsCampaign(GetWorld())) return;
-	UWorld* World = GetWorld();
-	if (World->IsInSeamlessTravel() || !World->NextURL.IsEmpty())
-	{
-		return;
-	}
-
-	const FString CurrentMap = UGameplayStatics::GetCurrentLevelName(World, true);
-	FString Destination;
-	TArray<TSoftObjectPtr<UWorld>> Maps = { TutorialMap, TestMap3 };
-	Maps.Append(AdditionalTestMaps);
-	for (int32 Index = 0; Index < Maps.Num(); ++Index)
-	{
-		if (CurrentMap == Maps[Index].GetAssetName())
-		{
-			Destination = Maps[(Index + 1) % Maps.Num()].ToSoftObjectPath().GetLongPackageName();
-			break;
-		}
-	}
-	if (Destination.IsEmpty() || !FPackageName::DoesPackageExist(Destination))
-	{
-		return;
-	}
-
-	// 모든 플레이어의 입장 완료 후 카메라 상태 보관
-	for (auto It = World->GetPlayerControllerIterator(); It; ++It)
-	{
-		APFPlayerController* PlayerController = Cast<APFPlayerController>(It->Get());
-		if (!PlayerController || !PlayerController->bInitialSpawnComplete
-			|| !PlayerController->HasClientLoadedCurrentWorld())
-		{
-			return;
-		}
-		PlayerController->CaptureCharacterState();
-	}
-
-	const FString ModeOption = APFSessionGameState::IsVersus(World) ? TEXT("?PFMode=Versus") : FString();
-	const bool bTravelStarted = ServerTravel(GetWorld(), Destination + ModeOption + TEXT("?SeamlessTravel"));
-	if (!bTravelStarted)
-	{
-		PFLOG(Warning, TEXT("Test map travel failed: %s"), *Destination);
-	}
 }
 
 // 최초 생성 대상 확인
@@ -555,8 +589,7 @@ bool APFGameMode::FindSpawnTransform(UWorld* World, const UCapsuleComponent* Cap
 	AStaticMeshActor* SpawnAreaActor = nullptr;
 	for (TActorIterator<AStaticMeshActor> It(World); It; ++It)
 	{
-		if (It->ActorHasTag(TEXT("PFRequireNavigableSpawn"))
-			|| It->GetActorNameOrLabel().Equals(TEXT("SM_Cube"), ESearchCase::CaseSensitive))
+		if (It->ActorHasTag(TEXT("PFRequireNavigableSpawn")))
 		{
 			SpawnAreaActor = *It;
 			break;
@@ -564,6 +597,53 @@ bool APFGameMode::FindSpawnTransform(UWorld* World, const UCapsuleComponent* Cap
 	}
 	if (!SpawnAreaActor)
 	{
+		// 지정 영역이 없는 맵은 이동 가능한 지면에서 생성
+		UNavigationSystemV1* Navigation = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
+		const FNavAgentProperties AgentProperties(CapsuleRadius, CapsuleHalfHeight * 2.f);
+		ANavigationData* NavData = Navigation ? Navigation->GetNavDataForProps(AgentProperties,
+			SpawnCenter ? *SpawnCenter : FVector::ZeroVector) : nullptr;
+		if (!NavData) return false;
+
+		FNavLocation NavOrigin;
+		if (SpawnCenter && !Navigation->ProjectPointToNavigation(*SpawnCenter, NavOrigin,
+			FVector(CapsuleRadius, CapsuleRadius, CapsuleHalfHeight * 2.f), NavData))
+		{
+			return false;
+		}
+
+		FCollisionObjectQueryParams GroundTypes;
+		GroundTypes.AddObjectTypesToQuery(ECC_WorldStatic);
+		GroundTypes.AddObjectTypesToQuery(GetCollisionChannel(PFCollisionChannelNames::Wall));
+		const FVector TraceOffset(0.f, 0.f, 100.f);
+		while (RemainingAttempts > 0)
+		{
+			--RemainingAttempts;
+			FNavLocation Candidate;
+			const bool bFoundLocation = SpawnCenter
+				? Navigation->GetRandomReachablePointInRadius(NavOrigin.Location, SpawnRadius, Candidate, NavData)
+				: Navigation->GetRandomPoint(Candidate, NavData);
+			if (!bFoundLocation || (SpawnCenter
+				&& FVector::DistSquared2D(Candidate.Location, *SpawnCenter) > FMath::Square(SpawnRadius)))
+			{
+				continue;
+			}
+
+			FHitResult GroundHit;
+			if (!World->LineTraceSingleByObjectType(GroundHit, Candidate.Location + TraceOffset,
+				Candidate.Location - TraceOffset, GroundTypes, QueryParams) || GroundHit.ImpactNormal.Z < 0.5f)
+			{
+				continue;
+			}
+			const FVector SpawnLocation = GroundHit.ImpactPoint + FVector(0.f, 0.f, CapsuleHalfHeight + 2.f);
+			if (bCheckBlockingCollision && World->OverlapBlockingTestByChannel(SpawnLocation, FQuat::Identity,
+				Capsule->GetCollisionObjectType(), FCollisionShape::MakeCapsule(CapsuleRadius, CapsuleHalfHeight),
+				QueryParams, FCollisionResponseParams(Capsule->GetCollisionResponseToChannels())))
+			{
+				continue;
+			}
+			OutSpawnTransform = FTransform(FRotator::ZeroRotator, SpawnLocation);
+			return true;
+		}
 		return false;
 	}
 

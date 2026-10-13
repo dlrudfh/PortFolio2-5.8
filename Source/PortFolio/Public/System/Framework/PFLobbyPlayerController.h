@@ -12,12 +12,16 @@ class PORTFOLIO_API APFLobbyPlayerController : public APlayerController
 	GENERATED_BODY()
 
 public:
+	static void InitializeLobbyCamera(APlayerController* PlayerController);
+
 	UFUNCTION(Server, Reliable)
 	void Server_SelectCharacter(ECHARACTER SelectedCharacter);
 	UFUNCTION(Server, Reliable)
 	void Server_SetReady(bool bReady, int32 SettingsRevision);
 	UFUNCTION(Server, Reliable)
 	void Server_SelectMap(FName Map);
+	UFUNCTION(Server, Reliable)
+	void Server_SetCapacity(int32 Capacity);
 	UFUNCTION(Server, Reliable)
 	void Server_StartMatch();
 	UFUNCTION(Server, Reliable)
@@ -26,6 +30,8 @@ public:
 	void Client_LeaveLobby();
 
 protected:
+	virtual void PostInitializeComponents() override;
+	virtual void ReceivedPlayer() override;
 	virtual void BeginPlay() override;
 	virtual void OnRep_PlayerState() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;

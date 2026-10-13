@@ -20,8 +20,6 @@ struct FPFCampaignProgress
 	UPROPERTY() int32 RemainingEnemies = 0;
 	UPROPERTY() int32 Gathered = 0;
 	UPROPERTY() int32 Living = 0;
-	UPROPERTY() int32 SkipVotes = 0;
-	UPROPERTY() int32 Viewers = 0;
 	UPROPERTY() FName Shot;
 	UPROPERTY() double PhaseStarted = 0.;
 	UPROPERTY() double Elapsed = 0.;
@@ -49,8 +47,9 @@ public:
 	bool FindPlayerStart(APFPlayerController* Player, FTransform& Result);
 	bool DeferJoiningPlayer(APFPlayerController* Player);
 	void HandlePlayerDeath(APFPlayerController* Player);
-	void Interact(APFPlayerController* Player);
-	void VoteSkip(APFPlayerController* Player);
+	bool Interact(APFPlayerController* Player);
+	bool CanSkipShot(const APFPlayerController* Player) const;
+	void SkipShot(APFPlayerController* Player);
 	bool GetObjectiveLocation(APFPlayerController* Player, FVector& Result);
 	APFCampaignShot* GetCurrentShot() const;
 	APFCampaignAnchor* Anchor(FName Id) const;
@@ -102,7 +101,6 @@ private:
 	TMap<FName, FEncounterRuntime> Encounters;
 	TSet<FName> Completed;
 	TSet<FString> Claims;
-	TSet<TWeakObjectPtr<APFPlayerController>> Voters;
 	TSet<TWeakObjectPtr<APFPlayerController>> RegisteredPlayers;
 	TSet<TWeakObjectPtr<APFCharacter>> CountedDeaths;
 	TMap<TWeakObjectPtr<APFPlayerController>, FIntPoint> RouteProgress;

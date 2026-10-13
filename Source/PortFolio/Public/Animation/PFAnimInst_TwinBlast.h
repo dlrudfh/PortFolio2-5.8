@@ -36,4 +36,6 @@ private:
 	virtual void LoadMontages() override;
 	virtual void HandleMontageStarted(UAnimMontage* Montage) override;
 	virtual void AnimNotify_ResetCombo() override;
+
+	bool bAttackStartedRelaxed = false;
 };

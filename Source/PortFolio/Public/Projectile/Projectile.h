@@ -6,12 +6,35 @@
 #include "Character/PFCharacter.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/DamageEvents.h"
+#include "Engine/ReplicatedState.h"
 #include "GameFramework/Actor.h"
 #include "Kismet/GameplayStatics.h"
 #include "Particles/ParticleSystem.h"
 #include "GameFramework/ProjectileMovementComponent.h"
 
 #include "Projectile.generated.h"
+
+// 탄환 풀 복제 상태
+USTRUCT()
+struct FPFProjectilePoolState
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	uint32 Generation = 0;
+	UPROPERTY()
+	bool bActive = false;
+	UPROPERTY()
+	FRepMovement Movement;
+
+	bool NetSerialize(FArchive& Ar, UPackageMap* Map, bool& bOutSuccess);
+};
+
+template<>
+struct TStructOpsTypeTraits<FPFProjectilePoolState> : TStructOpsTypeTraitsBase2<FPFProjectilePoolState>
+{
+	enum { WithNetSerializer = true };
+};
 
 // 공통 투사체 클래스
 UCLASS(meta=(PrioritizeCategories="Attack Mesh Movement Collision"))
@@ -41,10 +64,13 @@ protected:
 	virtual void SetComponent() PURE_VIRTUAL(AProjectile::SetComponent);
 	virtual void SetParticle() PURE_VIRTUAL(AProjectile::SetParticle);
 	virtual void BeginPlay() override;
+	virtual void PreReplication(IRepChangedPropertyTracker& ChangedPropertyTracker) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual void UpdatePoolVisuals();
+	void RefreshPoolMovement();
+	void ApplyPoolState();
 	UFUNCTION()
-	void OnRep_IsActive();
+	void OnRep_PoolState();
 
 protected:
 	UFUNCTION()
@@ -82,8 +108,10 @@ protected:
 	// 피해 출처 어빌리티
 	TWeakObjectPtr<class UGameplayAbility> SourceAbility;
 
-	UPROPERTY(ReplicatedUsing = OnRep_IsActive)
+	UPROPERTY(ReplicatedUsing = OnRep_PoolState)
+	FPFProjectilePoolState PoolState;
 	bool bIsActive = false;
+	uint32 AppliedPoolGeneration = 0;
 
 	// 풀 반환 예약
 	FTimerHandle ReturnTimerHandle;

@@ -6,6 +6,7 @@
 #include "System/Framework/PFPlayerState.h"
 #include "System/Framework/PFTutorialManager.h"
 #include "System/Subsystems/PFGameInstanceSubsystem.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 
 APFItem::APFItem() : NiagaraID(NIAGARA_END)
 {
@@ -22,6 +23,7 @@ APFItem::APFItem() : NiagaraID(NIAGARA_END)
 
 	NiagaraCom = CreateDefaultSubobject<UNiagaraComponent>(TEXT("Niagara"));
 	NiagaraCom->SetupAttachment(RootComponent);
+	NiagaraCom->SetAutoActivate(false);
 }
 
 void APFItem::BeginPlay()
@@ -49,17 +51,17 @@ const FPFItemDefinition* APFItem::GetDefinition(int32 ItemID)
 // 서버 아이템 데이터, 표시 설정
 void APFItem::SetItemData(int ItemID, APFPlayerController* InChestOpener)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(PF_ItemSetData);
 	if (!HasAuthority() || ItemID < 0) return;
 	StoredItemID = ItemID;
 	ChestOpener = InChestOpener;
 	const FPFItemDefinition* Definition = GetDefinition(ItemID);
 	NiagaraID = Definition ? Definition->NiagaraID : NIAGARA_END;
 
-	OnRep_NiagaraID();
-
 	// 설정 완료 후 겹친 플레이어 감지
 	if (HasActorBegunPlay())
 	{
+		OnRep_NiagaraID();
 		CollisionCom->SetGenerateOverlapEvents(true);
 		CollisionCom->UpdateOverlaps();
 	}
@@ -68,14 +70,17 @@ void APFItem::SetItemData(int ItemID, APFPlayerController* InChestOpener)
 // 아이템 표시 이펙트 반영
 void APFItem::OnRep_NiagaraID()
 {
-	NiagaraCom->SetAsset(GETNIAGARA(NiagaraID));
-	if (NiagaraCom->GetAsset()) NiagaraCom->Activate(true);
+	TRACE_CPUPROFILER_EVENT_SCOPE(PF_ItemRefreshNiagara);
+	if (!HasActorBegunPlay() && !IsActorBeginningPlay()) return;
+	UNiagaraSystem* Effect = NiagaraID != NIAGARA_END ? GETNIAGARA(NiagaraID) : nullptr;
+	if (NiagaraCom->GetAsset() != Effect) NiagaraCom->SetAsset(Effect);
+	if (Effect && !NiagaraCom->IsActive()) NiagaraCom->Activate();
 }
 
 // 아이템 표시 이펙트 활성화
 void APFItem::ActivateNiagaraEffect()
 {
-	NiagaraCom->Activate();
+	OnRep_NiagaraID();
 }
 
 // 접촉한 플레이어의 아이템 획득 처리
@@ -91,6 +96,7 @@ void APFItem::OnBeginOverlap(UPrimitiveComponent* OverlappedComponent, AActor* O
 // 인벤토리 추가 후 월드 아이템 제거
 void APFItem::UseItem(APFCharacter* Character)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(PF_ItemPickup);
 	if (!HasAuthority() || IsActorBeingDestroyed() || !IsValid(Character) || !Character->IsPlayerCharacter()
 		|| !Character->IsPlayerControlled() || StoredItemID == RETURN_ERROR)
 	{

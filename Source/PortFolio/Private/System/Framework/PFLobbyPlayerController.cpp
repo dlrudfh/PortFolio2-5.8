@@ -1,10 +1,63 @@
 #include "System/Framework/PFLobbyPlayerController.h"
 
+#include "Camera/CameraActor.h"
+#include "Camera/CameraComponent.h"
+#include "Camera/PlayerCameraManager.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
 #include "System/Framework/PFGameInstance.h"
 #include "System/Framework/PFLobbyGameMode.h"
 #include "System/Framework/PFPlayerState.h"
 #include "UI/PFGameCursor.h"
+
+// 로비 정보 수신 전에 선택 카메라 고정
+void APFLobbyPlayerController::InitializeLobbyCamera(APlayerController* PlayerController)
+{
+	UWorld* World = PlayerController ? PlayerController->GetWorld() : nullptr;
+	if (!World || World->GetNetMode() == NM_DedicatedServer
+		|| !World->GetMapName().Contains(TEXT("Title")) || !PlayerController->PlayerCameraManager) return;
+	for (TActorIterator<ACameraActor> It(World); It; ++It)
+	{
+		ACameraActor* CameraActor = *It;
+		if (!CameraActor->ActorHasTag(TEXT("DummyCamera"))) continue;
+
+		// 로비 카메라의 고정 노출, 빛 번짐 조절
+		UCameraComponent* Camera = CameraActor->GetCameraComponent();
+		FPostProcessSettings& Settings = Camera->PostProcessSettings;
+		Settings.bOverride_AutoExposureMethod = true;
+		Settings.AutoExposureMethod = AEM_Manual;
+		Settings.bOverride_AutoExposureApplyPhysicalCameraExposure = true;
+		Settings.AutoExposureApplyPhysicalCameraExposure = false;
+		Settings.bOverride_AutoExposureBias = true;
+		Settings.AutoExposureBias = 0.f;
+		Settings.bOverride_AutoExposureBiasCurve = true;
+		Settings.AutoExposureBiasCurve = nullptr;
+		Settings.bOverride_LocalExposureHighlightContrastScale = true;
+		Settings.LocalExposureHighlightContrastScale = 1.f;
+		Settings.bOverride_LocalExposureShadowContrastScale = true;
+		Settings.LocalExposureShadowContrastScale = 1.f;
+		Settings.bOverride_BloomIntensity = true;
+		Settings.BloomIntensity = 0.15f;
+		Camera->PostProcessBlendWeight = 1.f;
+
+		PlayerController->bAutoManageActiveCameraTarget = false;
+		PlayerController->SetViewTarget(CameraActor);
+		PlayerController->PlayerCameraManager->UpdateCamera(0.f);
+		return;
+	}
+}
+
+void APFLobbyPlayerController::PostInitializeComponents()
+{
+	Super::PostInitializeComponents();
+	InitializeLobbyCamera(this);
+}
+
+void APFLobbyPlayerController::ReceivedPlayer()
+{
+	Super::ReceivedPlayer();
+	if (IsLocalController()) InitializeLobbyCamera(this);
+}
 
 void APFLobbyPlayerController::BeginPlay()
 {
@@ -68,6 +121,12 @@ void APFLobbyPlayerController::Server_SetReady_Implementation(bool bReady, int32
 void APFLobbyPlayerController::Server_SelectMap_Implementation(FName Map)
 {
 	if (APFLobbyGameMode* Lobby = GetWorld()->GetAuthGameMode<APFLobbyGameMode>()) Lobby->SelectMap(this, Map);
+}
+
+// 서버에 로비 정원 변경 요청
+void APFLobbyPlayerController::Server_SetCapacity_Implementation(int32 Capacity)
+{
+	if (APFLobbyGameMode* Lobby = GetWorld()->GetAuthGameMode<APFLobbyGameMode>()) Lobby->SetCapacity(this, Capacity);
 }
 
 // 서버에 게임 시작 요청

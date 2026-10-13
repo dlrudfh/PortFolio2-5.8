@@ -38,6 +38,7 @@ public:
 	static bool IsTraining(const UWorld* World);
 	static int32 GetMaxPlayers(EPFSessionMode SessionMode);
 	bool IsHost(const APlayerState* Player) const;
+	int32 GetLobbyPlayerCount() const;
 	bool CanStart() const;
 	bool IsPartyReady() const;
 	bool CanLeave(const APFPlayerState* Player) const;

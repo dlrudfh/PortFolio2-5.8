@@ -212,6 +212,17 @@ void UPFTitle::NativeDestruct()
 	Super::NativeDestruct();
 }
 
+FReply UPFTitle::NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
+{
+	if (InMouseEvent.GetEffectingButton() == EKeys::LeftMouseButton && LobbyModeText
+		&& LobbyModeText->GetCachedGeometry().IsUnderLocation(InMouseEvent.GetScreenSpacePosition()))
+	{
+		OpenCapacitySelection();
+		if (bEditingLobbyCapacity) return FReply::Handled();
+	}
+	return Super::NativeOnMouseButtonDown(InGeometry, InMouseEvent);
+}
+
 // 싱글플레이 튜토리얼 시작
 void UPFTitle::StartTutorial()
 {
@@ -315,7 +326,7 @@ void UPFTitle::StartSession()
 	APFLobbyPlayerController* PC = Cast<APFLobbyPlayerController>(GetOwningPlayer());
 	const APFSessionGameState* Session = APFSessionGameState::Get(GetWorld());
 	const APFPlayerState* Player = PC ? PC->GetPlayerState<APFPlayerState>() : nullptr;
-	if (bSessionBusy || CurrentPage != 3 || !PC || !Player || !Session
+	if (bSessionBusy || bEditingLobbyCapacity || CurrentPage != 3 || !PC || !Player || !Session
 		|| !Session->bInitialized || Session->Phase != EPFSessionPhase::Lobby) return;
 	if (Session->IsHost(Player))
 	{
@@ -328,6 +339,7 @@ void UPFTitle::StartSession()
 void UPFTitle::ShowPage(uint8 Page)
 {
 	CurrentPage = Page;
+	bEditingLobbyCapacity = false;
 	if (Page != 3) PreviewPlayerCount = 0;
 	if (LobbyTestButton) LobbyTestButton->SetVisibility(ESlateVisibility::Collapsed);
 	if (UWidget* Background = GetWidgetFromName(TEXT("TitleBackground")))
@@ -368,39 +380,81 @@ void UPFTitle::SelectVersus()
 // 1인 정원 선택
 void UPFTitle::SelectOnePlayer()
 {
-	if (bSessionBusy || CurrentPage != 1) return;
-	PendingCapacity = 1;
-	RefreshSetup();
+	SelectCapacity(1);
 }
 
 // 2인 정원 선택
 void UPFTitle::SelectTwoPlayers()
 {
-	if (bSessionBusy || CurrentPage != 1) return;
-	PendingCapacity = 2;
-	RefreshSetup();
+	SelectCapacity(2);
 }
 
 // 3인 정원 선택
 void UPFTitle::SelectThreePlayers()
 {
-	if (bSessionBusy || CurrentPage != 1) return;
-	PendingCapacity = 3;
-	RefreshSetup();
+	SelectCapacity(3);
 }
 
 // 4인 정원 선택
 void UPFTitle::SelectFourPlayers()
 {
-	if (bSessionBusy || CurrentPage != 1) return;
-	PendingCapacity = 4;
+	SelectCapacity(4);
+}
+
+// 생성 화면, 로비의 정원 선택
+void UPFTitle::SelectCapacity(int32 Capacity)
+{
+	if (bSessionBusy || (CurrentPage != 1 && !bEditingLobbyCapacity)) return;
+	if (bEditingLobbyCapacity)
+	{
+		const APFSessionGameState* Session = APFSessionGameState::Get(GetWorld());
+		const APlayerController* PC = GetOwningPlayer();
+		if (!Session || !PC || Session->Phase != EPFSessionPhase::Lobby || !Session->IsHost(PC->PlayerState)
+			|| Capacity < Session->GetLobbyPlayerCount()) return;
+	}
+	PendingCapacity = Capacity;
+	RefreshSetup();
+}
+
+// 기존 방 설정창을 호스트 정원 편집에 재사용
+void UPFTitle::OpenCapacitySelection()
+{
+	const APFSessionGameState* Session = APFSessionGameState::Get(GetWorld());
+	const APlayerController* PC = GetOwningPlayer();
+	if (bSessionBusy || bEditingLobbyCapacity || CurrentPage != 3 || !RoomSetupPanel || !PC
+		|| !Session || !Session->bInitialized || Session->Phase != EPFSessionPhase::Lobby
+		|| !Session->IsHost(PC->PlayerState)
+		|| (MapSelectPanel && MapSelectPanel->IsVisible())
+		|| (CharacterSelectPanel && CharacterSelectPanel->IsVisible())) return;
+	bEditingLobbyCapacity = true;
+	PendingMode = Session->Mode;
+	PendingCapacity = Session->Capacity;
+	if (UCanvasPanelSlot* SetupSlot = Cast<UCanvasPanelSlot>(RoomSetupPanel->Slot)) SetupSlot->SetZOrder(100);
+	RoomSetupPanel->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
+	RefreshSetup();
+	RefreshLobby();
+}
+
+// 정원 편집창 닫기
+void UPFTitle::CloseCapacitySelection()
+{
+	bEditingLobbyCapacity = false;
+	if (RoomSetupPanel) RoomSetupPanel->SetVisibility(ESlateVisibility::Collapsed);
 	RefreshSetup();
 }
 
 // 선택한 모드, 정원 표시
 void UPFTitle::RefreshSetup()
 {
-	PendingCapacity = FMath::Clamp(PendingCapacity, 1, APFSessionGameState::GetMaxPlayers(PendingMode));
+	const APFSessionGameState* Session = bEditingLobbyCapacity ? APFSessionGameState::Get(GetWorld()) : nullptr;
+	const int32 MinimumCapacity = Session ? FMath::Max(1, Session->GetLobbyPlayerCount()) : 1;
+	PendingCapacity = FMath::Clamp(PendingCapacity, MinimumCapacity, APFSessionGameState::GetMaxPlayers(PendingMode));
+	if (UTextBlock* Title = Cast<UTextBlock>(GetWidgetFromName(TEXT("RoomSetupTitle"))))
+		Title->SetText(FText::FromString(bEditingLobbyCapacity ? TEXT("Player Limit") : TEXT("Create Session")));
+	if (UTextBlock* Next = Cast<UTextBlock>(GetWidgetFromName(TEXT("SetupNextButtonLabel"))))
+		Next->SetText(FText::FromString(bEditingLobbyCapacity ? TEXT("Apply") : TEXT("Next")));
+	if (UTextBlock* Back = Cast<UTextBlock>(GetWidgetFromName(TEXT("SetupBackButtonLabel"))))
+		Back->SetText(FText::FromString(bEditingLobbyCapacity ? TEXT("Cancel") : TEXT("Back")));
 	const auto SetSelected = [](UButton* Button, bool bSelected)
 	{
 		if (!Button) return;
@@ -411,11 +465,14 @@ void UPFTitle::RefreshSetup()
 	};
 	SetSelected(Cast<UButton>(GetWidgetFromName(TEXT("StoryModeButton"))), PendingMode == EPFSessionMode::Story);
 	SetSelected(Cast<UButton>(GetWidgetFromName(TEXT("VersusModeButton"))), PendingMode == EPFSessionMode::Versus);
+	for (const TCHAR* Name : { TEXT("StoryModeButton"), TEXT("VersusModeButton") })
+		if (UButton* Button = Cast<UButton>(GetWidgetFromName(FName(Name))))
+			Button->SetIsEnabled(!bSessionBusy && !bEditingLobbyCapacity);
 	for (int32 Count = 1; Count <= 4; ++Count)
 		if (UButton* Button = Cast<UButton>(GetWidgetFromName(FName(FString::Printf(TEXT("PlayerCount%dButton"), Count)))))
 		{
 			SetSelected(Button, PendingCapacity == Count);
-			Button->SetIsEnabled(!bSessionBusy && Count <= APFSessionGameState::GetMaxPlayers(PendingMode));
+			Button->SetIsEnabled(!bSessionBusy && Count >= MinimumCapacity && Count <= APFSessionGameState::GetMaxPlayers(PendingMode));
 		}
 	if (UTextBlock* Summary = Cast<UTextBlock>(GetWidgetFromName(TEXT("RoomSummaryText"))))
 		Summary->SetText(FText::FromString(FString::Printf(TEXT("%s / %d %s"),
@@ -423,9 +480,20 @@ void UPFTitle::RefreshSetup()
 			PendingCapacity, PendingCapacity == 1 ? TEXT("Player") : TEXT("Players"))));
 }
 
-// 방 설정 후 이름 입력
+// 생성 설정 진행, 로비 정원 적용
 void UPFTitle::SetupNext()
 {
+	if (bSessionBusy) return;
+	if (bEditingLobbyCapacity)
+	{
+		APFLobbyPlayerController* PC = Cast<APFLobbyPlayerController>(GetOwningPlayer());
+		const APFSessionGameState* Session = APFSessionGameState::Get(GetWorld());
+		if (!PC || !Session || Session->Phase != EPFSessionPhase::Lobby || !Session->IsHost(PC->PlayerState)) return;
+		RefreshSetup();
+		PC->Server_SetCapacity(PendingCapacity);
+		CloseCapacitySelection();
+		return;
+	}
 	if (CurrentPage == 1) ShowSessionNameInput(true);
 }
 
@@ -433,6 +501,7 @@ void UPFTitle::SetupNext()
 void UPFTitle::GoBack()
 {
 	if (bSessionBusy) return;
+	if (bEditingLobbyCapacity) { CloseCapacitySelection(); return; }
 	if (CurrentPage == 2) ShowPage(IsCreateSession ? 1 : 0);
 	else if (CurrentPage == 1) ShowPage(0);
 }
@@ -483,7 +552,7 @@ void UPFTitle::OpenMapSelection()
 {
 	const APFSessionGameState* Session = APFSessionGameState::Get(GetWorld());
 	const APlayerController* PC = GetOwningPlayer();
-	if (bSessionBusy || CurrentPage != 3 || !Session || !Session->bInitialized || !PC || !MapSelectPanel
+	if (bSessionBusy || bEditingLobbyCapacity || CurrentPage != 3 || !Session || !Session->bInitialized || !PC || !MapSelectPanel
 		|| Session->Phase != EPFSessionPhase::Lobby || Session->Mode != EPFSessionMode::Versus
 		|| !Session->IsHost(PC->PlayerState)) return;
 	MapSelectPanel->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
@@ -588,7 +657,7 @@ void UPFTitle::HandleDummyClicked(APFDummy* Dummy)
 	const APFSessionGameState* Session = APFSessionGameState::Get(GetWorld());
 	const APlayerController* PC = GetOwningPlayer();
 	const APFPlayerState* Player = PC ? PC->GetPlayerState<APFPlayerState>() : nullptr;
-	if (bSessionBusy || CurrentPage != 3 || !IsValid(Dummy) || !Session || !Session->bInitialized || !Player
+	if (bSessionBusy || bEditingLobbyCapacity || CurrentPage != 3 || !IsValid(Dummy) || !Session || !Session->bInitialized || !Player
 		|| Session->Phase != EPFSessionPhase::Lobby || (MapSelectPanel && MapSelectPanel->IsVisible())
 		|| (CharacterSelectPanel && CharacterSelectPanel->IsVisible())) return;
 	const int32 Index = SelectionDummies.IndexOfByKey(Dummy);
@@ -613,6 +682,7 @@ void UPFTitle::RefreshLobby()
 		|| (Session->Phase != EPFSessionPhase::Lobby && Session->Phase != EPFSessionPhase::Starting))
 	{
 		PreviewPlayerCount = 0;
+		if (bEditingLobbyCapacity) CloseCapacitySelection();
 		if (LobbyTestButton)
 		{
 			LobbyTestButton->SetVisibility(ESlateVisibility::Collapsed);
@@ -624,52 +694,56 @@ void UPFTitle::RefreshLobby()
 	APlayerController* PC = GetOwningPlayer();
 	if (ACameraActor* Cam = SelectionCamera.Get(); Cam && PC && (PC->GetViewTarget() != Cam || SelectionDummies.IsEmpty()))
 	{
-		// 로비 카메라의 고정 노출, 빛 번짐 조절
-		UCameraComponent* Camera = Cam->GetCameraComponent();
-		FPostProcessSettings& Settings = Camera->PostProcessSettings;
-		Settings.bOverride_AutoExposureMethod = true;
-		Settings.AutoExposureMethod = AEM_Manual;
-		Settings.bOverride_AutoExposureApplyPhysicalCameraExposure = true;
-		Settings.AutoExposureApplyPhysicalCameraExposure = false;
-		Settings.bOverride_AutoExposureBias = true;
-		Settings.AutoExposureBias = 0.f;
-		Settings.bOverride_AutoExposureBiasCurve = true;
-		Settings.AutoExposureBiasCurve = nullptr;
-		Settings.bOverride_LocalExposureHighlightContrastScale = true;
-		Settings.LocalExposureHighlightContrastScale = 1.f;
-		Settings.bOverride_LocalExposureShadowContrastScale = true;
-		Settings.LocalExposureShadowContrastScale = 1.f;
-		Settings.bOverride_BloomIntensity = true;
-		Settings.BloomIntensity = 0.15f;
-		Camera->PostProcessBlendWeight = 1.f;
-		PC->SetViewTargetWithBlend(Cam, 0.f);
+		APFLobbyPlayerController::InitializeLobbyCamera(PC);
 		BackdropViewportSize = FIntPoint::ZeroValue;
 	}
 	const APFPlayerState* LocalPlayer = PC ? PC->GetPlayerState<APFPlayerState>() : nullptr;
 	const bool bVersus = Session->Mode == EPFSessionMode::Versus;
 	const bool bHost = Session->IsHost(LocalPlayer);
 	const bool bMayEdit = !bSessionBusy && Session->Phase == EPFSessionPhase::Lobby;
+	if (bEditingLobbyCapacity)
+	{
+		if (!bMayEdit || !bHost) CloseCapacitySelection();
+		else RefreshSetup();
+	}
 	if (!bMayEdit)
 	{
 		if (MapSelectPanel) MapSelectPanel->SetVisibility(ESlateVisibility::Collapsed);
 		if (CharacterSelectPanel) CharacterSelectPanel->SetVisibility(ESlateVisibility::Collapsed);
 	}
 	if (LobbyRoomText) LobbyRoomText->SetText(FText::FromString(Session->RoomName));
-	if (LobbyModeText) LobbyModeText->SetText(FText::FromString(FString::Printf(TEXT("%s / %d %s"),
-		bVersus ? TEXT("Versus Mode") : TEXT("Story Mode"), Session->Capacity,
-		Session->Capacity == 1 ? TEXT("Player") : TEXT("Players"))));
-	if (LobbyActionText) LobbyActionText->SetText(FText::FromString(bHost ? TEXT("Start") : TEXT("Ready")));
+	if (LobbyModeText)
+	{
+		const bool bCanChangeCapacity = bHost && bMayEdit && !bEditingLobbyCapacity;
+		LobbyModeText->SetText(FText::FromString(FString::Printf(TEXT("%s / %d/%d Players%s"),
+			bVersus ? TEXT("Versus Mode") : TEXT("Story Mode"), Session->GetLobbyPlayerCount(), Session->Capacity,
+			bHost ? TEXT("  [Change]") : TEXT(""))));
+		LobbyModeText->SetVisibility(bCanChangeCapacity ? ESlateVisibility::Visible : ESlateVisibility::HitTestInvisible);
+		LobbyModeText->SetToolTipText(bCanChangeCapacity ? FText::FromString(TEXT("Change player limit")) : FText::GetEmpty());
+	}
+	// 정원, 준비 상태와 관계없이 시작 버튼 표시
+	if (LobbyActionText)
+	{
+		LobbyActionText->SetText(FText::FromString(bHost ? TEXT("Start") : TEXT("Ready")));
+		LobbyActionText->SetVisibility(ESlateVisibility::HitTestInvisible);
+		LobbyActionText->SetRenderOpacity(1.f);
+	}
 	if (LobbyActionCheck) LobbyActionCheck->SetVisibility(!bHost && LocalPlayer && LocalPlayer->IsLobbyReady()
 		? ESlateVisibility::HitTestInvisible : ESlateVisibility::Hidden);
-	if (LobbyActionButton) LobbyActionButton->SetIsEnabled(bMayEdit && LocalPlayer
-		&& (bHost ? Session->CanStart() : LocalPlayer->HasLobbySelection()));
-	if (LobbyLeaveButton) LobbyLeaveButton->SetIsEnabled(bMayEdit && Session->CanLeave(LocalPlayer));
+	if (LobbyActionButton)
+	{
+		LobbyActionButton->SetVisibility(ESlateVisibility::Visible);
+		LobbyActionButton->SetRenderOpacity(1.f);
+		LobbyActionButton->SetIsEnabled(bMayEdit && !bEditingLobbyCapacity && LocalPlayer
+			&& (bHost ? Session->CanStart() : LocalPlayer->HasLobbySelection()));
+	}
+	if (LobbyLeaveButton) LobbyLeaveButton->SetIsEnabled(bMayEdit && !bEditingLobbyCapacity && Session->CanLeave(LocalPlayer));
 	if (MapSelectPanel) MapSelectPanel->SetIsEnabled(bMayEdit && bHost && bVersus);
 	if (CharacterSelectPanel) CharacterSelectPanel->SetIsEnabled(bMayEdit && LocalPlayer && bVersus);
 	if (MapPreviewButton)
 	{
 		MapPreviewButton->SetVisibility(bVersus ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
-		MapPreviewButton->SetIsEnabled(bMayEdit && bHost);
+		MapPreviewButton->SetIsEnabled(bMayEdit && bHost && !bEditingLobbyCapacity);
 	}
 	if (MapPreviewName)
 	{
@@ -700,7 +774,7 @@ void UPFTitle::RefreshLobby()
 	if (LobbyTestButton)
 	{
 		LobbyTestButton->SetVisibility(bVersus ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
-		LobbyTestButton->SetIsEnabled(bVersus && bMayEdit && DisplayedCount < 4);
+		LobbyTestButton->SetIsEnabled(bVersus && bMayEdit && !bEditingLobbyCapacity && DisplayedCount < 4);
 	}
 	bool bRebuild = bDummiesAreVersus != bVersus || SelectionDummies.Num() != DisplayedCount
 		|| (bVersus && DummyPlayers.Num() != Players.Num());
@@ -714,7 +788,7 @@ void UPFTitle::RefreshLobby()
 		const FViewport* Viewport = ViewportPlayer && ViewportPlayer->ViewportClient ? ViewportPlayer->ViewportClient->Viewport : nullptr;
 		if (Viewport && Viewport->GetSizeXY() != DummyViewportSize) UpdateDummyLayout();
 	}
-	const bool bPopupOpen = (MapSelectPanel && MapSelectPanel->IsVisible()) || (CharacterSelectPanel && CharacterSelectPanel->IsVisible());
+	const bool bPopupOpen = bEditingLobbyCapacity || (MapSelectPanel && MapSelectPanel->IsVisible()) || (CharacterSelectPanel && CharacterSelectPanel->IsVisible());
 	for (int32 Index = 0; Index < SelectionDummies.Num(); ++Index)
 	{
 		APFDummy* Dummy = SelectionDummies[Index];

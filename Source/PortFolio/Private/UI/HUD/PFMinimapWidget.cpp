@@ -6,6 +6,8 @@
 #include "System/Framework/PFPlayerController.h"
 #include "Brushes/SlateRoundedBoxBrush.h"
 #include "Components/TextBlock.h"
+#include "Components/CanvasPanelSlot.h"
+#include "InputCoreTypes.h"
 #include "Engine/Texture2D.h"
 #include "EngineUtils.h"
 #include "GameFramework/PlayerController.h"
@@ -43,7 +45,59 @@ TSharedRef<SWidget> UPFMinimapWidget::RebuildWidget()
 	MapSurface = LayoutWidget->GetWidgetFromName(TEXT("MapSurface"));
 	MapNameText = PFWidgetHelpers::Find<UTextBlock>(LayoutWidget, TEXT("MapName"));
 	if (UWidget* Preview = LayoutWidget->GetWidgetFromName(TEXT("MapPreview"))) Preview->SetVisibility(ESlateVisibility::Collapsed);
+	LastLayoutSize = FVector2D::ZeroVector;
 	return LayoutWidget->TakeWidget();
+}
+
+// 주변 지도, 전체 지도 표시 방식
+void UPFMinimapWidget::SetWholeMapMode(bool bWholeMap)
+{
+	bShowWholeMap = bWholeMap;
+	SetIsFocusable(bWholeMap);
+	SetVisibility(bWholeMap ? ESlateVisibility::Visible : ESlateVisibility::HitTestInvisible);
+	LastLayoutSize = FVector2D::ZeroVector;
+}
+
+// 중앙 전체 지도 크기, 프레임 배치
+void UPFMinimapWidget::UpdateMapLayout(const FVector2D& AvailableSize)
+{
+	if (!bShowWholeMap || !LayoutWidget || !MapPanel || AvailableSize.X <= 0. || AvailableSize.Y <= 0.
+		|| LastLayoutSize.Equals(AvailableSize, .5)) return;
+	LastLayoutSize = AvailableSize;
+	const double Side = FMath::Max(120., FMath::Min(820., FMath::Min(AvailableSize.X * .75 - 20., AvailableSize.Y * .8 - 44.)));
+	const FVector2D PanelSize(Side + 20., Side + 44.);
+	if (UCanvasPanelSlot* PanelSlot = Cast<UCanvasPanelSlot>(MapPanel->Slot))
+	{
+		PanelSlot->SetAnchors(FAnchors(.5f, .5f));
+		PanelSlot->SetAlignment(FVector2D(.5, .5));
+		PanelSlot->SetAutoSize(false);
+		PanelSlot->SetPosition(FVector2D::ZeroVector);
+		PanelSlot->SetSize(PanelSize);
+	}
+	const auto Resize = [this](FName Name, const FVector2D& Position, const FVector2D& Size)
+	{
+		UWidget* Widget = LayoutWidget->GetWidgetFromName(Name);
+		UCanvasPanelSlot* Slot = Widget ? Cast<UCanvasPanelSlot>(Widget->Slot) : nullptr;
+		if (!Slot) return;
+		Slot->SetAutoSize(false);
+		Slot->SetPosition(Position);
+		Slot->SetSize(Size);
+	};
+	Resize(TEXT("MinimapFrame"), FVector2D::ZeroVector, PanelSize);
+	Resize(TEXT("MapSurface"), FVector2D(10., 34.), FVector2D(Side));
+	Resize(TEXT("MapName"), FVector2D(18., 7.), FVector2D(Side - 16., 23.));
+	Resize(TEXT("HeaderLine"), FVector2D(13., 31.), FVector2D(Side - 6., 1.));
+}
+
+FReply UPFMinimapWidget::NativeOnPreviewKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent)
+{
+	if (bShowWholeMap && (InKeyEvent.GetKey() == EKeys::M || InKeyEvent.GetKey() == EKeys::Escape))
+	{
+		if (!InKeyEvent.IsRepeat())
+			if (APFPlayerController* Player = Cast<APFPlayerController>(GetOwningPlayer())) Player->ToggleFullMap();
+		return FReply::Handled();
+	}
+	return Super::NativeOnPreviewKeyDown(InGeometry, InKeyEvent);
 }
 
 void UPFMinimapWidget::ReleaseSlateResources(bool bReleaseChildren)
@@ -77,7 +131,8 @@ void UPFMinimapWidget::RefreshMap()
 {
 	MappedWorld = GetWorld();
 	CurrentMap = IsDesignTime() ? PreviewMap : FName(*UGameplayStatics::GetCurrentLevelName(this, true));
-	if (MapNameText) MapNameText->SetText(FText::FromName(CurrentMap));
+	if (MapNameText) MapNameText->SetText(bShowWholeMap
+		? FText::FromString(FString::Printf(TEXT("%s  |  M / Esc 닫기"), *CurrentMap.ToString())) : FText::FromName(CurrentMap));
 	MapTexture = nullptr;
 	if (!Atlas)
 	{
@@ -126,6 +181,7 @@ void UPFMinimapWidget::RefreshCharacters()
 void UPFMinimapWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 {
 	Super::NativeTick(MyGeometry, InDeltaTime);
+	UpdateMapLayout(MyGeometry.GetLocalSize());
 	if (IsDesignTime())
 	{
 		return;
@@ -179,9 +235,16 @@ int32 UPFMinimapWidget::NativePaint(const FPaintArgs& Args, const FGeometry& All
 	Box(BaseLayer + 2, MapPosition, MapSize, FLinearColor(.012f, .017f, .018f, Opacity));
 
 	// 이미지 경계 밖은 빈 공간으로 표시
-	const FVector2D Range(ViewRadius * 2.f);
-	const FVector2D ViewMin = PlayerPosition - Range * .5;
-	const FVector2D ViewMax = PlayerPosition + Range * .5;
+	const FVector2D MapCenter = bShowWholeMap ? (WorldMin + WorldMax) * .5 : PlayerPosition;
+	FVector2D Range(ViewRadius * 2.f);
+	if (bShowWholeMap)
+	{
+		const FVector2D Extent = WorldMax - WorldMin;
+		const double UnitsPerPixel = FMath::Max(Extent.X / MapSize.X, Extent.Y / MapSize.Y);
+		Range = MapSize * UnitsPerPixel;
+	}
+	const FVector2D ViewMin = MapCenter - Range * .5;
+	const FVector2D ViewMax = MapCenter + Range * .5;
 	const FVector2D VisibleMin(FMath::Max(ViewMin.X, WorldMin.X), FMath::Max(ViewMin.Y, WorldMin.Y));
 	const FVector2D VisibleMax(FMath::Min(ViewMax.X, WorldMax.X), FMath::Min(ViewMax.Y, WorldMax.Y));
 	if (VisibleMax.X > VisibleMin.X && VisibleMax.Y > VisibleMin.Y)
@@ -200,6 +263,12 @@ int32 UPFMinimapWidget::NativePaint(const FPaintArgs& Args, const FGeometry& All
 
 	// 주변 캐릭터 위치, 본인 위치
 	const FVector2D Center = MapPosition + MapSize * .5;
+	const auto MapPoint = [&](const FVector2D& WorldPosition)
+	{
+		const FVector2D Point = Center - (WorldPosition - MapCenter) / Range * MapSize;
+		return FVector2D(FMath::Clamp(Point.X, MapPosition.X + 11., MapPosition.X + MapSize.X - 11.),
+			FMath::Clamp(Point.Y, MapPosition.Y + 11., MapPosition.Y + MapSize.Y - 11.));
+	};
 	const FSlateRoundedBoxBrush DotBrush(FLinearColor::White);
 	const auto Dot = [&](int32 Layer, const FVector2D& Point, float Radius, const FLinearColor& Color)
 	{
@@ -216,13 +285,11 @@ int32 UPFMinimapWidget::NativePaint(const FPaintArgs& Args, const FGeometry& All
 			continue;
 		}
 		const FVector2D Delta = FVector2D(Character->GetActorLocation()) - PlayerPosition;
-		if (Delta.SizeSquared() > FMath::Square(ViewRadius))
+		if (!bShowWholeMap && Delta.SizeSquared() > FMath::Square(ViewRadius))
 		{
 			continue;
 		}
-		FVector2D Point = Center - Delta / Range * MapSize;
-		Point.X = FMath::Clamp(Point.X, MapPosition.X + 11.0, MapPosition.X + MapSize.X - 11.0);
-		Point.Y = FMath::Clamp(Point.Y, MapPosition.Y + 11.0, MapPosition.Y + MapSize.Y - 11.0);
+		const FVector2D Point = MapPoint(FVector2D(Character->GetActorLocation()));
 		Dot(BaseLayer + 6, Point, 5.f, Character->IsEnemyCharacter()
 			? FLinearColor(.95f, .08f, .06f, Opacity) : FLinearColor(1.f, .8f, .04f, Opacity));
 	}
@@ -231,12 +298,13 @@ int32 UPFMinimapWidget::NativePaint(const FPaintArgs& Args, const FGeometry& All
 	const FVector Facing = LocalPawn ? FRotator(0.f, LocalPawn->GetActorRotation().Yaw, 0.f).Vector() : FVector(0.f, 1.f, 0.f);
 	const FVector2D Forward = (-FVector2D(Facing) / Range * MapSize).GetSafeNormal();
 	const FVector2D Right(-Forward.Y, Forward.X);
+	const FVector2D LocalPoint = MapPoint(PlayerPosition);
 	const TArray<FVector2f> ArrowOutline = {
-		FVector2f(Center + Forward * 14.),
-		FVector2f(Center - Forward * 10. + Right * 9.),
-		FVector2f(Center - Forward * 4.),
-		FVector2f(Center - Forward * 10. - Right * 9.),
-		FVector2f(Center + Forward * 14.)
+		FVector2f(LocalPoint + Forward * 14.),
+		FVector2f(LocalPoint - Forward * 10. + Right * 9.),
+		FVector2f(LocalPoint - Forward * 4.),
+		FVector2f(LocalPoint - Forward * 10. - Right * 9.),
+		FVector2f(LocalPoint + Forward * 14.)
 	};
 	TArray<FSlateVertex> ArrowVertices;
 	ArrowVertices.Reserve(4);
@@ -255,7 +323,7 @@ int32 UPFMinimapWidget::NativePaint(const FPaintArgs& Args, const FGeometry& All
 	const APFPlayerController* Player = Cast<APFPlayerController>(GetOwningPlayer());
 	if (Player && Player->GetCampaignGuide(Goal))
 	{
-		const FVector2D Offset = -(FVector2D(Goal) - PlayerPosition) / Range * MapSize;
+		const FVector2D Offset = -(FVector2D(Goal) - MapCenter) / Range * MapSize;
 		const double Limit = MapSize.X * .5 - 14.;
 		const double Scale = FMath::Min(1., Limit / FMath::Max(1., FMath::Max(FMath::Abs(Offset.X), FMath::Abs(Offset.Y))));
 		FVector2D Point = Center + Offset * Scale;

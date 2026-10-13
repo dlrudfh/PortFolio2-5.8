@@ -53,6 +53,7 @@ int UPFAnimInst_Kwang::MontageEndTask(UAnimMontage* Montage)
 		{
 			return etoi(MONTAGE_END);
 		}
+		Set_Lerp(LerpVal, false, 10.f);
 	}
 	CurMtg = GetCurrentActiveMontage();
 

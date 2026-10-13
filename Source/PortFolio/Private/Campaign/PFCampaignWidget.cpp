@@ -76,16 +76,19 @@ void UPFCampaignWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTim
 	PFWidgetHelpers::SetTextIfChanged(StepText, FText::FromString(FString::Printf(TEXT("진행 %d / %d"), FMath::Min(Progress.Step + 1, StepCount), StepCount)));
 	PFWidgetHelpers::SetTextIfChanged(Objective, Director->GetObjectiveText());
 	ObjectivePanel->SetVisibility(bComplete ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
+	APFPlayerController* Player = Cast<APFPlayerController>(GetOwningPlayer());
 	FString Detail;
 	if (Step && (Step->Type == EPFCampaignObjective::Rally || Step->Type == EPFCampaignObjective::Interact))
 		Detail = FString::Printf(TEXT("집결 %d / %d"), Progress.Gathered, Progress.Living);
 	if (Progress.Phase == EPFCampaignPhase::Preparing) Detail = TEXT("참가자와 캐릭터 준비 중");
 	if (Progress.Phase == EPFCampaignPhase::Starting) Detail = TEXT("플레이어와 적 등장 중");
-	if (Progress.Phase == EPFCampaignPhase::Camera) Detail = FString::Printf(TEXT("Enter · 연출 건너뛰기 %d / %d"), Progress.SkipVotes, Progress.Viewers);
+	if (Progress.Phase == EPFCampaignPhase::Camera)
+		Detail = Director->CanSkipShot(Player) ? TEXT("Enter · 연출 건너뛰기") : TEXT("호스트만 연출을 건너뛸 수 있습니다.");
 	if (Progress.Phase == EPFCampaignPhase::Resetting) Detail = FString::Printf(TEXT("전원 사망 · %.0f초 후 체크포인트에서 재시작"), FMath::Max(0., 5. - (Director->ServerTime() - Progress.PhaseStarted)));
 	if (Progress.Phase == EPFCampaignPhase::Fault) Detail = Progress.Error.ToString() + TEXT("\n메뉴에서 타이틀로 돌아갈 수 있습니다.");
 	if (Progress.Phase == EPFCampaignPhase::Traveling) Detail = TEXT("다음 챕터로 이동 중");
-	APFPlayerController* Player = Cast<APFPlayerController>(GetOwningPlayer());
+	if (UButton* ReturnButton = PFWidgetHelpers::Find<UButton>(LayoutWidget, TEXT("ReturnButton")))
+		ReturnButton->SetIsEnabled(Player && Player->CanUseCampaignResultInput());
 	if (Player && Player->IsCampaignWaiting() && Progress.Phase == EPFCampaignPhase::Playing) Detail = TEXT("동료 관전 중 · 다음 체크포인트에서 복귀");
 	const bool bShowEnemies = Step && Step->RequiredEncounters.Num() > 0 && Detail.IsEmpty()
 		&& Progress.Phase == EPFCampaignPhase::Playing;

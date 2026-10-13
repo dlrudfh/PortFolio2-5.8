@@ -132,7 +132,7 @@ void APFLobbyGameMode::SetReady(APFLobbyPlayerController* Player, bool bReady, i
 	Session->NotifySessionChanged();
 }
 
-// 맵 변경 후 게스트 준비 해제
+// 로비 설정 변경 후 게스트 준비 해제
 void APFLobbyGameMode::ResetGuestReadiness()
 {
 	APFSessionGameState* Session = GetGameState<APFSessionGameState>();
@@ -153,6 +153,27 @@ void APFLobbyGameMode::SelectMap(APFLobbyPlayerController* Player, FName Map)
 		bAllowed = Map == FName(FString::Printf(TEXT("Map%d"), Index));
 	if (!bAllowed) return;
 	Session->SelectedMap = Map;
+	++Session->SettingsRevision;
+	ResetGuestReadiness();
+	Session->NotifySessionChanged();
+}
+
+// 실제 참가자를 유지하며 호스트 정원 변경
+void APFLobbyGameMode::SetCapacity(APFLobbyPlayerController* Player, int32 Capacity)
+{
+	APFPlayerState* State = GetLobbyPlayer(Player);
+	APFSessionGameState* Session = GetGameState<APFSessionGameState>();
+	if (!State || !Session->IsHost(State) || Capacity == Session->Capacity
+		|| Capacity < FMath::Max(1, FMath::Max(GetNumPlayers(), Session->GetLobbyPlayerCount()))
+		|| Capacity > APFSessionGameState::GetMaxPlayers(Session->Mode)) return;
+
+	TArray<APFPlayerState*> Players;
+	for (APlayerState* Entry : Session->PlayerArray)
+		if (APFPlayerState* Member = Cast<APFPlayerState>(Entry); IsValid(Member) && Member->GetLobbySlot() >= 0)
+			Players.Add(Member);
+	Players.Sort([](const APFPlayerState& A, const APFPlayerState& B) { return A.GetLobbySlot() < B.GetLobbySlot(); });
+	for (int32 Index = 0; Index < Players.Num(); ++Index) Players[Index]->SetLobbySlot(Index);
+	Session->Capacity = Capacity;
 	++Session->SettingsRevision;
 	ResetGuestReadiness();
 	Session->NotifySessionChanged();

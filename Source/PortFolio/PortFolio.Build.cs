@@ -12,5 +12,14 @@ public class PortFolio : ModuleRules
 		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "AIModule", "InputCore", "Niagara", "UMG", "Slate", "SlateCore", "GameplayAbilities", "GameplayTags", "GameplayTasks", "EnhancedInput", "OnlineSubsystem", "OnlineSubsystemSteam" });
 		PublicDependencyModuleNames.Add("NavigationSystem");
 		PrivateDependencyModuleNames.Add("Navmesh");
+
+		if (Target.Platform == UnrealTargetPlatform.Win64
+			&& Target.Type == TargetType.Game
+			&& Target.Configuration == UnrealTargetConfiguration.Shipping)
+		{
+			// Shipping 직접 실행용 Steam App ID
+			RuntimeDependencies.Add("$(TargetOutputDir)/steam_appid.txt",
+				System.IO.Path.Combine(ModuleDirectory, "steam_appid.txt"), StagedFileType.NonUFS);
+		}
 	}
 }

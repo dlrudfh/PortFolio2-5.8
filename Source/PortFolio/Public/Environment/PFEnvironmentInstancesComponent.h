@@ -12,6 +12,7 @@ class PORTFOLIO_API UPFEnvironmentInstancesComponent : public UHierarchicalInsta
 
 public:
 	virtual void GetNavigationData(FNavigationRelevantData& Data) const override;
+	virtual bool SupportsDitheredLODTransitions(EShaderPlatform ShaderPlatform) override;
 
 #if WITH_EDITOR
 	virtual void PostStaticMeshCompilation() override;

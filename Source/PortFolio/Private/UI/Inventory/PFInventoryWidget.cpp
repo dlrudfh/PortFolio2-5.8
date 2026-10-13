@@ -10,33 +10,62 @@
 #include "Components/CanvasPanelSlot.h"
 #include "Components/Image.h"
 #include "Components/TextBlock.h"
+#include "Engine/AssetManager.h"
+#include "Engine/StreamableManager.h"
 #include "Engine/Texture2D.h"
 #include "GameFramework/PlayerController.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Application/SlateUser.h"
 #include "Input/Reply.h"
 #include "InputCoreTypes.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 
-// 아이템 아이콘 조회, 캐시
-UTexture2D* UPFInventoryWidget::GetInventoryItemTexture(int32 ItemID)
+// 아이템 아이콘 비동기 준비
+void UPFInventoryWidget::PreloadItemIcons()
 {
-	if (const TObjectPtr<UTexture2D>* CachedTexture = ItemIconCache.Find(ItemID))
+	TRACE_CPUPROFILER_EVENT_SCOPE(PF_InventoryPreloadIcons);
+	if (ItemIconLoadHandle.IsValid()) return;
+	TArray<FSoftObjectPath> Paths;
+	for (int32 ItemID = 0; ItemID < etoi(APFItem::EITEM::ITEM_END); ++ItemID)
 	{
-		return CachedTexture->Get();
+		if (ItemIconCache.Contains(ItemID)) continue;
+		const FPFItemDefinition& Definition = *APFItem::GetDefinition(ItemID);
+		Paths.Add(FSoftObjectPath(Definition.IconPath));
 	}
+	if (Paths.IsEmpty()) return;
+	ItemIconLoadHandle = UAssetManager::GetStreamableManager().RequestAsyncLoad(Paths,
+		FStreamableDelegate::CreateUObject(this, &UPFInventoryWidget::HandleItemIconsLoaded));
+}
 
-	const FPFItemDefinition* Definition = APFItem::GetDefinition(ItemID);
-	if (!Definition)
+// 로드된 아이콘 보관, 슬롯 표시 갱신
+void UPFInventoryWidget::HandleItemIconsLoaded()
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(PF_InventoryIconsLoaded);
+	if (!bInventoryConstructed) return;
+	for (int32 ItemID = 0; ItemID < etoi(APFItem::EITEM::ITEM_END); ++ItemID)
 	{
-		return nullptr;
+		if (ItemIconCache.Contains(ItemID)) continue;
+		const FPFItemDefinition& Definition = *APFItem::GetDefinition(ItemID);
+		if (UTexture2D* Texture = Cast<UTexture2D>(FSoftObjectPath(Definition.IconPath).ResolveObject()))
+			ItemIconCache.Add(ItemID, Texture);
+		else PFLOG(Warning, TEXT("Inventory icon missing: %s"), Definition.IconPath);
 	}
+	ItemIconLoadHandle.Reset();
+	RefreshInventory();
 
-	UTexture2D* Texture = LoadObject<UTexture2D>(nullptr, Definition->IconPath);
-	if (Texture)
+	if (bIsDraggingItem && CurrentPlayerState.IsValid())
 	{
-		ItemIconCache.Add(ItemID, Texture);
+		const TArray<FPFInventorySlot>& Slots = CurrentPlayerState->GetInventorySlots();
+		if (Slots.IsValidIndex(DragSourceSlotIndex))
+			RebuildDragPreview(Slots[DragSourceSlotIndex].ItemID, Slots[DragSourceSlotIndex].Count);
 	}
-	return Texture;
+}
+
+// 준비된 아이템 아이콘 조회
+UTexture2D* UPFInventoryWidget::GetInventoryItemTexture(int32 ItemID) const
+{
+	const TObjectPtr<UTexture2D>* CachedTexture = ItemIconCache.Find(ItemID);
+	return CachedTexture ? CachedTexture->Get() : nullptr;
 }
 
 void UPFInventoryWidget::NativeConstruct()
@@ -66,6 +95,8 @@ void UPFInventoryWidget::NativeConstruct()
 	BindSlotWidgets(InventorySlotWidgets, APFPlayerState::InventorySlotCount, TEXT("Inventory"));
 	BindSlotWidgets(QuickSlotWidgets, APFPlayerState::QuickSlotCount, TEXT("Quick"));
 
+	bInventoryConstructed = true;
+	PreloadItemIcons();
 	SetInventoryWindowVisible(false);
 	BindPlayerState(GetOwningPlayer() ? GetOwningPlayer()->GetPlayerState<APFPlayerState>() : nullptr);
 }
@@ -110,6 +141,8 @@ void UPFInventoryWidget::BindPlayerState(APFPlayerState* NewPlayerState)
 // 인벤토리, 퀵슬롯 표시 갱신
 void UPFInventoryWidget::RefreshInventory()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(PF_InventoryRefresh);
+	if (!bInventoryConstructed) return;
 	UpdateSlotAppearance(false);
 	UpdateSlotAppearance(true);
 	UpdateSlotCooldowns();
@@ -321,6 +354,9 @@ void UPFInventoryWidget::CancelDrag()
 
 void UPFInventoryWidget::NativeDestruct()
 {
+	bInventoryConstructed = false;
+	if (ItemIconLoadHandle.IsValid()) ItemIconLoadHandle->CancelHandle();
+	ItemIconLoadHandle.Reset();
 	CancelDrag();
 	// 소지품 변경 구독 해제
 	if (CurrentPlayerState.IsValid())

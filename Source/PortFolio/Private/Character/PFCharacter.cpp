@@ -535,6 +535,25 @@ void APFCharacter::Tick(float DeltaTime)
 
 }
 
+void APFCharacter::CalcCamera(float DeltaTime, FMinimalViewInfo& OutResult)
+{
+	Super::CalcCamera(DeltaTime, OutResult);
+	if (IsLocallyControlled() || !IsPlayerCharacter() || !GetMesh()) return;
+
+	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	{
+		const APFPlayerController* Viewer = Cast<APFPlayerController>(It->Get());
+		if (Viewer && Viewer->IsLocalController() && Viewer->IsCampaignWaiting()
+			&& Viewer->GetPawn() != this && Viewer->GetViewTarget() == this)
+		{
+			// 관전 카메라에 메시의 네트워크 위치 보간 반영
+			const FVector UnsmoothedMeshLocation = GetActorTransform().TransformPosition(GetBaseTranslationOffset());
+			OutResult.Location += GetMesh()->GetComponentLocation() - UnsmoothedMeshLocation;
+			break;
+		}
+	}
+}
+
 void APFCharacter::FellOutOfWorld(const UDamageType& DamageType)
 {
 	if (!HasAuthority() || IsDeadCharacter())
@@ -935,7 +954,9 @@ void APFCharacter::ManageSpeed()
 {
 	if (!GetMovementComponent()->IsFalling())
 	{
-		if (IsSprinting() && !IsAttackCommandActive())
+		const bool bCanUseSprintSpeed = IsSprinting() && !IsAttackCommandActive()
+			&& !HasStateTag(PFGameplayTags::Character_State_Attacking);
+		if (bCanUseSprintSpeed)
 		{
 			GetCharacterMovement()->MaxWalkSpeed = SprintSpeed;
 		}
@@ -945,7 +966,7 @@ void APFCharacter::ManageSpeed()
 		}
 
 		// 시점 고정 중 후진 질주 감속
-		if (IsSprinting() && ViewpointFixed && etoi(FinalDir) >= etoi(BWD))
+		if (bCanUseSprintSpeed && ViewpointFixed && etoi(FinalDir) >= etoi(BWD))
 		{
 			GetCharacterMovement()->MaxWalkSpeed = SprintSpeed * 0.5f;
 		}
